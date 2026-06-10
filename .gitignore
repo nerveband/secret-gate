@@ -1,4 +1,14 @@
-node_modules/
+# Built binaries
+/client
+/secret-gate
+
+# Local secrets and 1Password Connect artifacts
 .env
 .env.*
 !.env.example
+1password-credentials.json
+op-data/
+
+# Local scratch files
+*.pem
+*.key

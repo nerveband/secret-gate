@@ -1,0 +1,38 @@
+services:
+  op-connect-api:
+    image: 1password/connect-api:latest
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./1password-credentials.json:/home/opuser/.op/1password-credentials.json:ro
+      - op-connect-data:/home/opuser/.op/data
+    restart: unless-stopped
+
+  op-connect-sync:
+    image: 1password/connect-sync:latest
+    volumes:
+      - ./1password-credentials.json:/home/opuser/.op/1password-credentials.json:ro
+      - op-connect-data:/home/opuser/.op/data
+    restart: unless-stopped
+
+  secret-gate:
+    depends_on:
+      - op-connect-api
+      - op-connect-sync
+    build: .
+    ports:
+      - "18080:8080"
+    environment:
+      PORT: "8080"
+      OP_CONNECT_HOST: "http://op-connect-api:8080"
+      OP_CONNECT_TOKEN: "${OP_CONNECT_TOKEN}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
+      WEBHOOK_BASE_URL: "${WEBHOOK_BASE_URL:-http://100.64.0.1:18080}"
+      REQUEST_TTL: "${REQUEST_TTL:-15m}"
+      CLEANUP_INTERVAL: "${CLEANUP_INTERVAL:-5m}"
+      AUTO_APPROVE_TTL: "${AUTO_APPROVE_TTL:-30m}"
+    restart: unless-stopped
+
+volumes:
+  op-connect-data:
