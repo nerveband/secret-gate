@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 )
 
 func TestIntegrationCacheHitMiss(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()
@@ -43,7 +43,7 @@ func TestIntegrationCacheHitMiss(t *testing.T) {
 }
 
 func TestIntegrationDaemonLifecycle(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()
@@ -105,7 +105,7 @@ func TestIntegrationSSHKeyDetection(t *testing.T) {
 }
 
 func TestIntegrationConcurrentAccess(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()
@@ -140,6 +140,26 @@ func TestIntegrationConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+
+	file, err := os.CreateTemp("", "secret-gate-*.sock")
+	if err != nil {
+		t.Fatalf("create temporary socket path: %v", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatalf("close temporary socket file: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove temporary socket file: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(path)
+	})
+	return path
 }
 
 func TestMockProxyFlow(t *testing.T) {

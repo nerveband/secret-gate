@@ -516,7 +516,7 @@ func TestHandleExecWithSecret_FieldNotFound(t *testing.T) {
 
 	result, _, err := handleExecWithSecret(context.Background(), dc, ExecWithSecretInput{
 		SecretName: "my-secret",
-		Field:  "nonexistent",
+		Field:      "nonexistent",
 		EnvVar:     "SECRET",
 		Command:    "echo test",
 	})
@@ -540,7 +540,7 @@ func TestHandleExecWithSecret_Success(t *testing.T) {
 
 	result, output, err := handleExecWithSecret(context.Background(), dc, ExecWithSecretInput{
 		SecretName: "my-secret",
-		Field:  "password",
+		Field:      "password",
 		EnvVar:     "MY_SECRET_PASSWORD",
 		Command:    "echo $MY_SECRET_PASSWORD",
 		TimeoutSec: 5,
@@ -574,7 +574,7 @@ func TestHandleExecWithSecret_CommandFailure(t *testing.T) {
 
 	result, output, err := handleExecWithSecret(context.Background(), dc, ExecWithSecretInput{
 		SecretName: "my-secret",
-		Field:  "key",
+		Field:      "key",
 		EnvVar:     "K",
 		Command:    "exit 42",
 		TimeoutSec: 5,
@@ -603,7 +603,7 @@ func TestHandleExecWithSecret_SecretNotInOutput(t *testing.T) {
 	// The command doesn't echo the secret, so it shouldn't appear in output
 	result, output, err := handleExecWithSecret(context.Background(), dc, ExecWithSecretInput{
 		SecretName: "cred",
-		Field:  "token",
+		Field:      "token",
 		EnvVar:     "AUTH_TOKEN",
 		Command:    "echo 'done'",
 		TimeoutSec: 5,
@@ -632,7 +632,7 @@ func TestHandleExecWithSecret_WorkingDir(t *testing.T) {
 	tmpDir := os.TempDir()
 	result, output, err := handleExecWithSecret(context.Background(), dc, ExecWithSecretInput{
 		SecretName: "my-secret",
-		Field:  "key",
+		Field:      "key",
 		EnvVar:     "K",
 		Command:    "pwd",
 		WorkingDir: tmpDir,
@@ -644,8 +644,17 @@ func TestHandleExecWithSecret_WorkingDir(t *testing.T) {
 	if result != nil {
 		t.Fatal("expected nil result")
 	}
-	if !strings.Contains(strings.TrimSpace(output.Stdout), "tmp") {
-		t.Errorf("expected output to contain tmp dir, got %q", output.Stdout)
+	reportedDir := strings.TrimSpace(output.Stdout)
+	expectedInfo, err := os.Stat(tmpDir)
+	if err != nil {
+		t.Fatalf("stat expected working directory: %v", err)
+	}
+	reportedInfo, err := os.Stat(reportedDir)
+	if err != nil {
+		t.Fatalf("stat reported working directory %q: %v", reportedDir, err)
+	}
+	if !os.SameFile(expectedInfo, reportedInfo) {
+		t.Errorf("working directory = %q, want %q", reportedDir, tmpDir)
 	}
 }
 
