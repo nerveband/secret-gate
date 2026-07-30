@@ -3,23 +3,16 @@ package autosession
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"sort"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/johnuopini/secret-gate/internal/models"
 )
 
-// Session is a temporary, in-memory approval rule created from a Telegram approval.
+// Session is a temporary, global in-memory approval window created from Telegram.
 type Session struct {
-	ID          string
-	Approver    string
-	Machine     string
-	RequesterIP string
-	SecretsKey  string
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
+	ID        string
+	Approver  string
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // Store keeps temporary approval sessions in memory.
@@ -33,17 +26,14 @@ func NewStore() *Store {
 	return &Store{sessions: make(map[string]*Session)}
 }
 
-// Create adds a session scoped to the request's requester and exact secret set.
-func (s *Store) Create(req *models.ApprovalRequest, approver string, ttl time.Duration) *Session {
+// Create adds a global approval window. All requests match until it expires.
+func (s *Store) Create(approver string, ttl time.Duration) *Session {
 	now := time.Now()
 	session := &Session{
-		ID:          randomID(),
-		Approver:    approver,
-		Machine:     req.RequesterMachine,
-		RequesterIP: req.RequesterIP,
-		SecretsKey:  secretsKey(req.Secrets),
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(ttl),
+		ID:        randomID(),
+		Approver:  approver,
+		CreatedAt: now,
+		ExpiresAt: now.Add(ttl),
 	}
 
 	s.mu.Lock()
@@ -52,10 +42,9 @@ func (s *Store) Create(req *models.ApprovalRequest, approver string, ttl time.Du
 	return session
 }
 
-// Match returns a live session that covers the exact request.
-func (s *Store) Match(req *models.ApprovalRequest) (*Session, bool) {
+// Match returns any live global approval window.
+func (s *Store) Match() (*Session, bool) {
 	now := time.Now()
-	key := secretsKey(req.Secrets)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,11 +53,7 @@ func (s *Store) Match(req *models.ApprovalRequest) (*Session, bool) {
 			delete(s.sessions, id)
 			continue
 		}
-		if session.Machine == req.RequesterMachine &&
-			session.RequesterIP == req.RequesterIP &&
-			session.SecretsKey == key {
-			return session, true
-		}
+		return session, true
 	}
 	return nil, false
 }
@@ -87,17 +72,6 @@ func (s *Store) Cleanup() int {
 		}
 	}
 	return removed
-}
-
-func secretsKey(secrets []models.SecretRequest) string {
-	parts := make([]string, 0, len(secrets))
-	for _, secret := range secrets {
-		fields := append([]string(nil), secret.Fields...)
-		sort.Strings(fields)
-		parts = append(parts, secret.SecretName+"\x00"+secret.Vault+"\x00"+strings.Join(fields, "\x00"))
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, "\x01")
 }
 
 func randomID() string {

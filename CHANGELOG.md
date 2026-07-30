@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The Telegram approval window now approves all secret requests for its full duration. It is not limited by requester, IP address, vault, item, or field.
+
 ## v0.2.1 — Cross-Platform & SSH Fixes
 
 ### Added

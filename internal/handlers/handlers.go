@@ -172,7 +172,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Attach batch secrets to the request
 	req.Secrets = secrets
 
-	if session, ok := h.sessions.Match(req); ok {
+	if session, ok := h.sessions.Match(); ok {
 		req.Approve()
 		if err := h.store.Save(req); err != nil {
 			h.log.Error("Failed to save auto-approved request", logger.F("error", err.Error(), "request_id", req.ID))

@@ -277,7 +277,7 @@ For detailed request/response schemas, see the OpenAPI spec at `/openapi.json` o
 - **No secrets in agent context.** MCP tools execute commands with secrets injected as env vars — the agent never sees the actual values.
 - **Unix socket IPC.** The daemon listens on a Unix socket with `0600` permissions, accessible only to the owning user.
 - **SSH agent integration.** SSH keys are added to ssh-agent with a TTL that matches the cache expiry, so they are automatically removed.
-- **Telegram approval gate.** Secret access requires explicit human approval through Telegram inline buttons. The optional "Approve window" button creates a scoped, in-memory approval session for matching requests from the same requester.
+- **Telegram approval gate.** Secret access requires explicit human approval through Telegram inline buttons. The optional "Approve window" button creates a global, in-memory approval session that approves all requests until the window expires.
 - **One-time tokens.** Secret retrieval tokens can only be used once. A second fetch returns an error.
 - **Configurable TTL.** All approval requests expire after a configurable duration (default: 15 minutes).
 - **Configurable approval windows.** `AUTO_APPROVE_TTL` controls how long Telegram approval-window sessions remain active (default: 30 minutes).

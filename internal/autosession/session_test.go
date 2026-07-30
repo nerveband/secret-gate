@@ -7,15 +7,11 @@ import (
 	"github.com/johnuopini/secret-gate/internal/models"
 )
 
-func TestStoreMatchesExactRequesterAndSecretsWithinTTL(t *testing.T) {
+func TestStoreMatchesAllRequestsWithinTTL(t *testing.T) {
 	store := NewStore()
-	req := request("agent-mac", "10.0.0.5", []models.SecretRequest{
-		{SecretName: "deploy-key", Vault: "AI Agents", Fields: []string{"private key"}},
-	})
+	session := store.Create("ashraf", 30*time.Minute)
 
-	session := store.Create(req, "ashraf", 30*time.Minute)
-
-	matched, ok := store.Match(req)
+	matched, ok := store.Match()
 	if !ok {
 		t.Fatal("expected matching request to be auto-approved")
 	}
@@ -27,42 +23,31 @@ func TestStoreMatchesExactRequesterAndSecretsWithinTTL(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsDifferentMachineIPOrSecret(t *testing.T) {
+func TestStoreWindowCoversDifferentMachineIPAndSecret(t *testing.T) {
 	store := NewStore()
-	base := request("agent-mac", "10.0.0.5", []models.SecretRequest{
-		{SecretName: "deploy-key", Vault: "AI Agents", Fields: []string{"private key"}},
-	})
-	store.Create(base, "ashraf", 30*time.Minute)
+	store.Create("ashraf", 30*time.Minute)
 
-	tests := map[string]*models.ApprovalRequest{
-		"machine": request("other-mac", "10.0.0.5", base.Secrets),
-		"ip":      request("agent-mac", "10.0.0.9", base.Secrets),
-		"secret": request("agent-mac", "10.0.0.5", []models.SecretRequest{
-			{SecretName: "other-key", Vault: "AI Agents", Fields: []string{"private key"}},
+	requests := []*models.ApprovalRequest{
+		request("other-mac", "10.0.0.9", []models.SecretRequest{
+			{SecretName: "other-key", Vault: "Other Vault", Fields: []string{"password"}},
 		}),
-		"field": request("agent-mac", "10.0.0.5", []models.SecretRequest{
-			{SecretName: "deploy-key", Vault: "AI Agents", Fields: []string{"password"}},
+		request("agent-mac", "10.0.0.5", []models.SecretRequest{
+			{SecretName: "deploy-key", Vault: "AI Agents", Fields: []string{"private key"}},
 		}),
 	}
 
-	for name, req := range tests {
-		t.Run(name, func(t *testing.T) {
-			if _, ok := store.Match(req); ok {
-				t.Fatal("request should not match auto-approval session")
-			}
-		})
+	for _, req := range requests {
+		if _, ok := store.Match(); !ok {
+			t.Fatalf("request from %s for %s should match the global window", req.RequesterMachine, req.SecretName)
+		}
 	}
 }
 
 func TestStoreExpiresSessions(t *testing.T) {
 	store := NewStore()
-	req := request("agent-mac", "10.0.0.5", []models.SecretRequest{
-		{SecretName: "deploy-key", Vault: "AI Agents"},
-	})
+	store.Create("ashraf", -time.Second)
 
-	store.Create(req, "ashraf", -time.Second)
-
-	if _, ok := store.Match(req); ok {
+	if _, ok := store.Match(); ok {
 		t.Fatal("expired session should not match")
 	}
 }

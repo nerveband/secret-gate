@@ -96,7 +96,7 @@ func main() {
 
 		case "approve_window":
 			req.Approve()
-			session := sessionStore.Create(req, approver, cfg.AutoApproveTTL)
+			session := sessionStore.Create(approver, cfg.AutoApproveTTL)
 			if err := requestStore.Update(req); err != nil {
 				log.Error("Error updating request", logger.F("error", err.Error(), "request_id", req.ID))
 			}
