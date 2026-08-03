@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"testing"
 )
 
@@ -28,6 +29,30 @@ func TestIsSSHPrivateKey(t *testing.T) {
 				t.Errorf("IsSSHPrivateKey() = %v, want %v", got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestCreateTempSSHKey(t *testing.T) {
+	path, err := CreateTempSSHKey("test-private-key")
+	if err != nil {
+		t.Fatalf("CreateTempSSHKey: %v", err)
+	}
+	defer os.Remove(path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat temp key: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("temp key mode = %04o, want 0600", got)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read temp key: %v", err)
+	}
+	if got, want := string(data), "test-private-key\n"; got != want {
+		t.Fatalf("temp key contents = %q, want %q", got, want)
 	}
 }
 

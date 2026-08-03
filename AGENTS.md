@@ -21,11 +21,13 @@ env GOCACHE=/tmp/secret-gate-go-cache GOMODCACHE=/tmp/secret-gate-go-mod CGO_ENA
 
 The local daemon uses `$XDG_RUNTIME_DIR/secret-gate.{sock,pid}` when that variable is set. It otherwise uses `/tmp/secret-gate-<uid>.{sock,pid}`. The socket and PID file must be mode `0600`.
 
+Linux and macOS are the supported client platforms. Darwin artifacts built on DevBox are cross-builds; native macOS behavior is verified only by the macOS CI job. Windows is unsupported because the daemon and command executor require Unix sockets and POSIX process behavior.
+
 ## Local Docker stack
 
 - Docker is a system service on DevBox. Use `sudo docker` and `sudo docker compose` for daemon operations.
 - `docker-compose.local.yml` publishes Secret Gate on `127.0.0.1:18080` and 1Password Connect on `127.0.0.1:18081` through the host port mappings. Do not expose either service publicly.
-- The local stack requires `.env` and `1password-credentials.json`. Do not create, copy, inspect, or commit those files during build-only validation.
+- The local stack requires mode-`0600` `.env` and `1password-credentials.json` files. Do not create, copy, inspect, or commit those files during build-only validation.
 - Validate Compose without secrets by supplying placeholder interpolation values to `docker compose config --quiet`. Only start the stack when the real local credential files already exist and the task authorizes using them.
 - `scripts/local-connect-doctor.sh` checks the published ports after the stack starts.
 

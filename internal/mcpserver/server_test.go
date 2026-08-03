@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -730,6 +732,61 @@ func TestHandleSSHWithSecret_NoSSHKeyInFields(t *testing.T) {
 	}
 	if result == nil || !result.IsError {
 		t.Fatal("expected tool error for no SSH key")
+	}
+}
+
+func TestHandleSSHWithSecret_FallsBackToIdentityFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "ssh-args")
+	writeExecutable := func(name, contents string) {
+		t.Helper()
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte(contents), 0755); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeExecutable("ssh-add", "#!/bin/sh\nexit 1\n")
+	writeExecutable("ssh", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSH_ARGS_FILE\"\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SSH_ARGS_FILE", argsFile)
+
+	dc := newMockDaemonClient(true)
+	dc.cache["ssh-key:"] = map[string]string{
+		"private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\ntest-key",
+	}
+
+	result, output, err := handleSSHWithSecret(context.Background(), dc, Config{SSHAgent: true}, SSHWithSecretInput{
+		SecretName: "ssh-key",
+		Host:       "example.com",
+	})
+	if err != nil {
+		t.Fatalf("handleSSHWithSecret: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if output.ExitCode != 0 {
+		t.Fatalf("SSH exit code = %d, stderr = %q", output.ExitCode, output.Stderr)
+	}
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read SSH args: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(data)), "\n")
+	identityIndex := slices.Index(args, "-i")
+	if identityIndex < 0 || identityIndex+1 >= len(args) {
+		t.Fatalf("SSH args do not contain an identity file: %q", args)
+	}
+	if !slices.Contains(args, "IdentitiesOnly=yes") {
+		t.Fatalf("SSH args do not restrict identities: %q", args)
+	}
+	if _, err := os.Stat(args[identityIndex+1]); !os.IsNotExist(err) {
+		t.Fatalf("temporary identity was not removed: %v", err)
 	}
 }
 

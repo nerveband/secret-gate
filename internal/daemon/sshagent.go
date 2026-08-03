@@ -25,27 +25,50 @@ func FindSSHKeyField(fields map[string]string) (string, string, bool) {
 	return "", "", false
 }
 
-func AddToSSHAgent(keyValue string, ttl time.Duration) error {
+// CreateTempSSHKey writes a private key to a mode-0600 temporary file.
+// The caller must remove the returned path as soon as the consuming command exits.
+func CreateTempSSHKey(keyValue string) (string, error) {
 	tmpFile, err := os.CreateTemp("", "op-ssh-key-*")
 	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	removeOnError := true
+	defer func() {
+		if removeOnError {
+			os.Remove(tmpPath)
+		}
+	}()
 
 	if err := os.Chmod(tmpPath, 0600); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
+		return "", fmt.Errorf("chmod temp file: %w", err)
 	}
 
 	if _, err := tmpFile.WriteString(keyValue); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("writing key to temp file: %w", err)
+		return "", fmt.Errorf("writing key to temp file: %w", err)
 	}
 	if !strings.HasSuffix(keyValue, "\n") {
-		tmpFile.WriteString("\n")
+		if _, err := tmpFile.WriteString("\n"); err != nil {
+			tmpFile.Close()
+			return "", fmt.Errorf("writing key newline: %w", err)
+		}
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return "", fmt.Errorf("closing temp key: %w", err)
+	}
+
+	removeOnError = false
+	return tmpPath, nil
+}
+
+func AddToSSHAgent(keyValue string, ttl time.Duration) error {
+	tmpPath, err := CreateTempSSHKey(keyValue)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpPath)
 
 	ttlSeconds := int(ttl.Seconds())
 	if ttlSeconds < 1 {

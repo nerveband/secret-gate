@@ -14,10 +14,10 @@ import (
 
 // Handler defaults.
 const (
-	defaultSearchLimit  = 10
-	defaultSSHPort      = 22
-	defaultSSHTimeout   = 120 * time.Second
-	defaultSSHAgentTTL  = 1 * time.Hour
+	defaultSearchLimit = 10
+	defaultSSHPort     = 22
+	defaultSSHTimeout  = 120 * time.Second
+	defaultSSHAgentTTL = 1 * time.Hour
 )
 
 // --- Interfaces ---
@@ -394,14 +394,27 @@ func handleSSHWithSecret(ctx context.Context, dc FullDaemonClient, cfg Config, i
 	}
 
 	// Add key to ssh-agent
+	identityPath := ""
 	if cfg.SSHAgent {
 		ttl := time.Duration(cfg.CacheTTLSec) * time.Second
 		if ttl <= 0 {
 			ttl = defaultSSHAgentTTL
 		}
 		if err := daemon.AddToSSHAgent(keyValue, ttl); err != nil {
-			return toolError(fmt.Sprintf("failed to add SSH key (%s) to ssh-agent: %v", fieldName, err)), SSHWithSecretOutput{}, nil
+			identityPath, err = daemon.CreateTempSSHKey(keyValue)
+			if err != nil {
+				return toolError(fmt.Sprintf("failed to prepare SSH key (%s) after ssh-agent error: %v", fieldName, err)), SSHWithSecretOutput{}, nil
+			}
 		}
+	} else {
+		var err error
+		identityPath, err = daemon.CreateTempSSHKey(keyValue)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to prepare SSH key (%s): %v", fieldName, err)), SSHWithSecretOutput{}, nil
+		}
+	}
+	if identityPath != "" {
+		defer os.Remove(identityPath)
 	}
 
 	// Build SSH command
@@ -410,6 +423,9 @@ func handleSSHWithSecret(ctx context.Context, dc FullDaemonClient, cfg Config, i
 		port = defaultSSHPort
 	}
 	sshArgs := []string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-p", fmt.Sprintf("%d", port)}
+	if identityPath != "" {
+		sshArgs = append(sshArgs, "-o", "IdentitiesOnly=yes", "-i", identityPath)
+	}
 	sshArgs = append(sshArgs, input.Host)
 	if input.Command != "" {
 		sshArgs = append(sshArgs, input.Command)
@@ -482,8 +498,8 @@ type realDaemonClient struct {
 func NewRealDaemonClient() FullDaemonClient {
 	selfBin, _ := os.Executable()
 	return &realDaemonClient{
-		client:  daemon.NewClient(daemon.SocketPath()),
-		selfBin: selfBin,
+		client:      daemon.NewClient(daemon.SocketPath()),
+		selfBin:     selfBin,
 		cacheTTLSec: 3600,
 	}
 }
@@ -492,8 +508,8 @@ func NewRealDaemonClient() FullDaemonClient {
 func NewRealDaemonClientWithConfig(cacheTTLSec int) FullDaemonClient {
 	selfBin, _ := os.Executable()
 	return &realDaemonClient{
-		client:  daemon.NewClient(daemon.SocketPath()),
-		selfBin: selfBin,
+		client:      daemon.NewClient(daemon.SocketPath()),
+		selfBin:     selfBin,
 		cacheTTLSec: cacheTTLSec,
 	}
 }

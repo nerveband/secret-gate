@@ -8,15 +8,37 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
-
 if [[ ! -f 1password-credentials.json ]]; then
   echo "missing 1password-credentials.json" >&2
   exit 1
 fi
+
+check_mode_600() {
+  local path="$1"
+  local mode
+
+  if mode="$(stat -c '%a' "$path" 2>/dev/null)"; then
+    :
+  elif mode="$(stat -f '%Lp' "$path" 2>/dev/null)"; then
+    :
+  else
+    echo "cannot determine permissions for ${path}" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" != "600" ]]; then
+    echo "${path} must have mode 600 (found ${mode})" >&2
+    exit 1
+  fi
+}
+
+check_mode_600 .env
+check_mode_600 1password-credentials.json
+
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
 
 if [[ -z "${OP_CONNECT_TOKEN:-}" ]]; then
   echo "missing OP_CONNECT_TOKEN in .env" >&2

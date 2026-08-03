@@ -6,12 +6,22 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  linux-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
       - run: go test ./... -count=1 -v
       - run: go vet ./...
+
+  macos-client-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Run portable client tests natively on macOS
+        run: go test -race -count=1 ./internal/clientconfig ./internal/daemon ./internal/mcpserver ./cmd/client

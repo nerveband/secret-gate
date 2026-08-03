@@ -77,7 +77,13 @@ curl -sL https://raw.githubusercontent.com/johnuopini/secret-gate/main/install.s
 
 - **1Password Connect server** — a running instance that Secret Gate queries for secrets ([setup guide](https://developer.1password.com/docs/connect/get-started/))
 - **Telegram bot** — created via [@BotFather](https://t.me/BotFather) to send approval notifications
-- **Docker** (recommended) or Go 1.23+ for building from source
+- **Docker** (recommended) or Go 1.25+ for building from source
+
+### Supported client platforms
+
+The client supports Linux and macOS on amd64 and arm64. Release binaries for macOS are cross-built on Linux, while portable client tests also run natively on GitHub-hosted macOS runners. The project does not provide macOS signing or notarization.
+
+Windows is not supported. The cache daemon relies on Unix sockets and POSIX process controls, and MCP command execution uses `sh`. No Windows binaries or Windows service integration are published.
 
 ## Server Deployment
 
@@ -93,7 +99,7 @@ docker compose up -d
 
 ```bash
 docker run -d \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -e OP_CONNECT_HOST=https://connect.example.com \
   -e OP_CONNECT_TOKEN=your-token \
   -e TELEGRAM_BOT_TOKEN=your-bot-token \
@@ -273,7 +279,7 @@ For detailed request/response schemas, see the OpenAPI spec at `/openapi.json` o
 
 ## Security
 
-- **No secrets on disk.** Secrets are cached only in the daemon's in-process memory. Nothing is written to the filesystem.
+- **Memory-only cache.** Cached secret values stay in the daemon process. SSH-agent integration uses a mode-`0600` temporary private-key file because `ssh-add` accepts a path; the file is removed immediately after `ssh-add` returns. If `ssh-add` fails, `ssh_with_secret` uses another short-lived mode-`0600` file with `ssh -i` and removes it when SSH exits.
 - **No secrets in agent context.** MCP tools execute commands with secrets injected as env vars — the agent never sees the actual values.
 - **Unix socket IPC.** The daemon listens on a Unix socket with `0600` permissions, accessible only to the owning user.
 - **SSH agent integration.** SSH keys are added to ssh-agent with a TTL that matches the cache expiry, so they are automatically removed.

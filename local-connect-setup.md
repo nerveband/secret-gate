@@ -11,6 +11,12 @@ Required 1Password artifacts:
 - `1password-credentials.json` in this directory
 - `OP_CONNECT_TOKEN` in `.env`
 
+Both `.env` and `1password-credentials.json` must have mode `0600`:
+
+```bash
+chmod 600 .env 1password-credentials.json
+```
+
 Start:
 
 ```bash
