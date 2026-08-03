@@ -23,15 +23,15 @@ if [[ -z "${OP_CONNECT_TOKEN:-}" ]]; then
   exit 1
 fi
 
-docker compose --env-file .env -f docker-compose.local.yml config --quiet
+sudo docker compose --env-file .env -f docker-compose.local.yml config --quiet
 
 echo "checking 1Password Connect API..."
 curl -fsS \
   -H "Accept: application/json" \
   -H "Authorization: Bearer ${OP_CONNECT_TOKEN}" \
-  http://localhost:8081/v1/vaults >/dev/null
+  http://localhost:18081/v1/vaults >/dev/null
 
 echo "checking Secret Gate..."
-curl -fsS http://localhost:8080/health >/dev/null
+curl -fsS http://localhost:18080/health >/dev/null
 
 echo "local Secret Gate stack is healthy"

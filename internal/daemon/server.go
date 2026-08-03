@@ -15,6 +15,7 @@ type Server struct {
 	cache      *Cache
 	cacheTTL   time.Duration
 	startedAt  time.Time
+	listenerMu sync.Mutex
 	listener   net.Listener
 	stopCh     chan struct{}
 	stopOnce   sync.Once
@@ -38,7 +39,17 @@ func (s *Server) Run() error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	s.listenerMu.Lock()
 	s.listener = ln
+	select {
+	case <-s.stopCh:
+		s.listener = nil
+		s.listenerMu.Unlock()
+		ln.Close()
+		return nil
+	default:
+		s.listenerMu.Unlock()
+	}
 
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
 		ln.Close()
@@ -66,9 +77,12 @@ func (s *Server) Run() error {
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
+		s.listenerMu.Lock()
 		if s.listener != nil {
 			s.listener.Close()
+			s.listener = nil
 		}
+		s.listenerMu.Unlock()
 		os.Remove(s.socketPath)
 	})
 	s.wg.Wait()

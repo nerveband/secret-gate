@@ -5,6 +5,11 @@
 ### Changed
 
 - The Telegram approval window now approves all secret requests for its full duration. It is not limited by requester, IP address, vault, item, or field.
+- The local Docker Compose stack now binds its published ports to loopback and its setup checks use the published `18080`/`18081` ports.
+
+### Fixed
+
+- Stopping the client daemon during startup no longer races with Unix socket listener initialization.
 
 ## v0.2.1 — Cross-Platform & SSH Fixes
 

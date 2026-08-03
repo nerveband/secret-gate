@@ -2,7 +2,7 @@ services:
   op-connect-api:
     image: 1password/connect-api:latest
     ports:
-      - "18081:8080"
+      - "127.0.0.1:18081:8080"
     volumes:
       - ./1password-credentials.json:/home/opuser/.op/1password-credentials.json:ro
       - op-connect-data:/home/opuser/.op/data
@@ -21,7 +21,7 @@ services:
       - op-connect-sync
     build: .
     ports:
-      - "18080:8080"
+      - "127.0.0.1:18080:8080"
     environment:
       PORT: "8080"
       OP_CONNECT_HOST: "http://op-connect-api:8080"

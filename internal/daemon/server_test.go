@@ -152,3 +152,21 @@ func TestServerFlush(t *testing.T) {
 		t.Errorf("entry count after flush = %d, want 0", resp.Status.EntryCount)
 	}
 }
+
+func TestServerStopDuringStartup(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, time.Hour)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Run() }()
+	srv.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() after immediate Stop() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not exit after immediate Stop()")
+	}
+}

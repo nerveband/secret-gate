@@ -2,9 +2,9 @@
 
 This local setup runs:
 
-- `op-connect-api` on `http://localhost:8081`
+- `op-connect-api` on `http://localhost:18081`
 - `op-connect-sync`
-- `secret-gate` on `http://localhost:8080`
+- `secret-gate` on `http://localhost:18080`
 
 Required 1Password artifacts:
 
@@ -14,7 +14,7 @@ Required 1Password artifacts:
 Start:
 
 ```bash
-docker compose --env-file .env -f docker-compose.local.yml up -d
+sudo docker compose --env-file .env -f docker-compose.local.yml up -d
 ```
 
 Verify 1Password Connect:
@@ -23,11 +23,11 @@ Verify 1Password Connect:
 curl -fsS \
   -H "Accept: application/json" \
   -H "Authorization: Bearer $OP_CONNECT_TOKEN" \
-  http://localhost:8081/v1/vaults
+  http://localhost:18081/v1/vaults
 ```
 
 Verify Secret Gate:
 
 ```bash
-curl -fsS http://localhost:8080/health
+curl -fsS http://localhost:18080/health
 ```
