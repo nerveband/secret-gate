@@ -132,6 +132,14 @@ Then run the `server` binary with the required environment variables set.
 
 ## Client Installation
 
+The CLI is a complete approval-request fallback and does not require MCP. It can search items, inspect field metadata, submit a Telegram request, wait for approval, and retrieve the approved response. MCP is recommended when an agent needs process-only injection, SSH-agent integration, current OTP generation, structured request context, or approval-gated writes.
+
+```bash
+secret-gate --server https://your-server --search "release account" --format json
+secret-gate --server https://your-server --secret "release-account" --vault "Agents" --fields --format json
+secret-gate --server https://your-server --secret "release-account" --vault "Agents" --field password --reason "publish the release"
+```
+
 The client binary (`secret-gate`) runs on the machine where your AI coding agent operates. It handles communication with the server and manages a local caching daemon.
 
 ### From the server

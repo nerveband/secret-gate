@@ -219,7 +219,7 @@ type Config struct {
 func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "secret-gate",
-		Version: "0.3.0",
+		Version: "0.3.1",
 	}, nil)
 
 	// Register all tools

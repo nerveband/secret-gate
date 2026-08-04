@@ -57,7 +57,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 		case r.URL.Path == "/secret/test-token" && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(secretResponse{
-				Secret: map[string]string{"password": "test-value"},
+				Secrets: map[string]map[string]string{"test-key": {"password": "test-value"}},
 			})
 
 		default:
@@ -126,6 +126,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 		result, output, err := handleRequestSecret(ctx, dc, pc, RequestSecretInput{
 			SecretName: "test-key",
 			Reason:     "integration test",
+			Fields:     []string{"password"},
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

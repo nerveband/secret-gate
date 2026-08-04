@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 — 2026-08-04
+
+### Fixed
+
+- MCP now decodes field-filtered HTTP responses correctly instead of caching an empty item.
+
 ## v0.3.0 — 2026-08-04
 
 ### Added

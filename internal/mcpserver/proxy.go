@@ -96,7 +96,8 @@ type statusResponse struct {
 }
 
 type secretResponse struct {
-	Secret map[string]string `json:"secret"`
+	Secret  map[string]string            `json:"secret"`
+	Secrets map[string]map[string]string `json:"secrets"`
 }
 
 type errorResponse struct {
@@ -390,10 +391,22 @@ func (p *httpProxyClient) retrieveAndCache(secretURL, secretName, vault string) 
 	if err := json.Unmarshal(respBody, &secretResp); err != nil {
 		return nil, fmt.Errorf("parsing secret response: %w", err)
 	}
+	fields := secretResp.Secret
+	if fields == nil && len(secretResp.Secrets) > 0 {
+		fields = secretResp.Secrets[secretName]
+		if fields == nil && len(secretResp.Secrets) == 1 {
+			for _, only := range secretResp.Secrets {
+				fields = only
+			}
+		}
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("secret response did not contain fields for %q", secretName)
+	}
 
 	// Build field names list (but NOT values)
-	fieldNames := make([]string, 0, len(secretResp.Secret))
-	for k := range secretResp.Secret {
+	fieldNames := make([]string, 0, len(fields))
+	for k := range fields {
 		fieldNames = append(fieldNames, k)
 	}
 
@@ -409,7 +422,7 @@ func (p *httpProxyClient) retrieveAndCache(secretURL, secretName, vault string) 
 	if p.dc != nil {
 		if err := p.dc.EnsureRunning(); err != nil {
 			result.Message = "Warning: secret approved but daemon failed to start: " + err.Error()
-		} else if err := p.dc.Store(secretName, vault, secretResp.Secret, p.cacheTTLSec); err != nil {
+		} else if err := p.dc.Store(secretName, vault, fields, p.cacheTTLSec); err != nil {
 			result.Message = "Warning: secret approved but caching failed: " + err.Error()
 		}
 	}
