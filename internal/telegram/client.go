@@ -159,6 +159,11 @@ func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL
 }
 
 func approvalMessage(req *models.ApprovalRequest) string {
+	return "🔐 <b>1Password request</b>\n\n" + requestNarrative(req) +
+		"\n\nDo you approve this request?\n\nExpires " + req.ExpiresAt.Format("15:04 MST") + " · ID <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func requestNarrative(req *models.ApprovalRequest) string {
 	esc := html.EscapeString
 	agent := defaultIfEmpty(req.Context.Agent, req.RequesterMachine)
 	model := defaultIfEmpty(req.Context.Model, "an agent")
@@ -182,13 +187,10 @@ func approvalMessage(req *models.ApprovalRequest) string {
 	purpose := defaultIfEmpty(req.Context.Task, req.Reason)
 	purpose = defaultIfEmpty(purpose, "No reason was provided.")
 	return fmt.Sprintf(
-		"🔐 <b>1Password request</b>\n\n"+
-			"<b>%s</b>, using <b>%s</b>, is working in <b>%s</b> and wants to <b>%s</b>:\n%s\n\n"+
-			"They need it because %s\n\n"+
-			"Do you approve this request?\n\n"+
-			"Expires %s · ID <code>%s</code>",
+		"<b>%s</b>, using <b>%s</b>, is working in <b>%s</b> and wants to <b>%s</b>:\n%s\n\n"+
+			"They need it because %s",
 		esc(agent), esc(model), esc(project), esc(action), "• "+strings.Join(wants, "\n• "),
-		esc(purpose), req.ExpiresAt.Format("15:04 MST"), esc(req.ID))
+		esc(purpose))
 }
 
 func formatDurationLabel(d time.Duration) string {
@@ -206,26 +208,14 @@ func formatDurationLabel(d time.Duration) string {
 
 // SendAutoApprovedNotification sends an audit message for a request covered by an approval session.
 func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error {
-	text := fmt.Sprintf(
-		"✅ *Secret Access Auto-Approved*\n\n"+
-			"*Secret:* `%s`\n"+
-			"*Vault:* `%s`\n"+
-			"*Machine:* `%s`\n"+
-			"*Approved by session from:* @%s\n"+
-			"*Window expires:* %s\n"+
-			"*Request ID:* `%s`",
-		escapeMarkdown(req.SecretName),
-		escapeMarkdown(req.Vault),
-		escapeMarkdown(req.RequesterMachine),
-		escapeMarkdown(approver),
-		expiresAt.Format("15:04:05 MST"),
-		req.ID,
-	)
+	text := "✅ <b>Auto-approved</b>\n\n" + requestNarrative(req) +
+		"\n\nApproved by the window opened by <b>@" + html.EscapeString(approver) + "</b>." +
+		" The window expires at " + expiresAt.Format("15:04 MST") + ".\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
 
 	msgReq := SendMessageRequest{
 		ChatID:    c.chatID,
 		Text:      text,
-		ParseMode: "Markdown",
+		ParseMode: "HTML",
 	}
 
 	body, err := json.Marshal(msgReq)
@@ -258,38 +248,16 @@ func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, appro
 
 // UpdateMessageApproved updates a message to show it was approved
 func (c *Client) UpdateMessageApproved(messageID int, req *models.ApprovalRequest, approver string) error {
-	text := fmt.Sprintf(
-		"✅ *Secret Access Approved*\n\n"+
-			"*Secret:* `%s`\n"+
-			"*Vault:* `%s`\n"+
-			"*Machine:* `%s`\n"+
-			"*Approved by:* @%s\n"+
-			"*Request ID:* `%s`",
-		escapeMarkdown(req.SecretName),
-		escapeMarkdown(req.Vault),
-		escapeMarkdown(req.RequesterMachine),
-		escapeMarkdown(approver),
-		req.ID,
-	)
+	text := "✅ <b>Approved</b>\n\n" + requestNarrative(req) +
+		"\n\nApproved by <b>@" + html.EscapeString(approver) + "</b>.\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
 
 	return c.editMessage(messageID, text, nil)
 }
 
 // UpdateMessageDenied updates a message to show it was denied
 func (c *Client) UpdateMessageDenied(messageID int, req *models.ApprovalRequest, denier string) error {
-	text := fmt.Sprintf(
-		"❌ *Secret Access Denied*\n\n"+
-			"*Secret:* `%s`\n"+
-			"*Vault:* `%s`\n"+
-			"*Machine:* `%s`\n"+
-			"*Denied by:* @%s\n"+
-			"*Request ID:* `%s`",
-		escapeMarkdown(req.SecretName),
-		escapeMarkdown(req.Vault),
-		escapeMarkdown(req.RequesterMachine),
-		escapeMarkdown(denier),
-		req.ID,
-	)
+	text := "❌ <b>Denied</b>\n\n" + requestNarrative(req) +
+		"\n\nDenied by <b>@" + html.EscapeString(denier) + "</b>.\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
 
 	return c.editMessage(messageID, text, nil)
 }
@@ -429,7 +397,7 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 		ChatID:      c.chatID,
 		MessageID:   messageID,
 		Text:        text,
-		ParseMode:   "Markdown",
+		ParseMode:   "HTML",
 		ReplyMarkup: keyboard,
 	}
 
@@ -459,32 +427,6 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 	}
 
 	return nil
-}
-
-func escapeMarkdown(s string) string {
-	// Simple escape for Markdown special characters
-	replacer := map[string]string{
-		"_": "\\_",
-		"*": "\\*",
-		"`": "\\`",
-		"[": "\\[",
-	}
-	for old, new := range replacer {
-		s = replaceAll(s, old, new)
-	}
-	return s
-}
-
-func replaceAll(s, old, new string) string {
-	result := ""
-	for _, c := range s {
-		if string(c) == old {
-			result += new
-		} else {
-			result += string(c)
-		}
-	}
-	return result
 }
 
 func defaultIfEmpty(s, def string) string {

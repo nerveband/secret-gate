@@ -86,3 +86,46 @@ func TestMutationApprovalHasNoWindowButton(t *testing.T) {
 		t.Fatal("mutation value leaked into Telegram")
 	}
 }
+
+func TestDecisionMessagesPreserveNarrativeAndReason(t *testing.T) {
+	var edited EditMessageTextRequest
+	var sent SendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/editMessageText":
+			_ = json.NewDecoder(r.Body).Decode(&edited)
+		case "/sendMessage":
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":123,"chat":{"id":456},"date":1}}`))
+	}))
+	defer server.Close()
+	client := New("token", 456)
+	client.baseURL = server.URL
+	req := &models.ApprovalRequest{ID: "id", SecretName: "account", Vault: "Agents", RequesterMachine: "devbox", Reason: "deploy the corrected server", Action: "read", Context: models.RequestContext{Agent: "Codex", Model: "gpt-5.6", Project: "secret-gate"}, Secrets: []models.SecretRequest{{SecretName: "account", Vault: "Agents", Fields: []string{"password"}}}}
+	if err := client.UpdateMessageApproved(123, req, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<b>Approved</b>", "<b>gpt-5.6</b>", "password", "because deploy the corrected server", "@owner"} {
+		if !strings.Contains(edited.Text, want) {
+			t.Errorf("approved message missing %q: %s", want, edited.Text)
+		}
+	}
+	if edited.ParseMode != "HTML" {
+		t.Fatalf("approved parse mode = %q", edited.ParseMode)
+	}
+	if err := client.SendAutoApprovedNotification(req, "owner", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<b>Auto-approved</b>", "password", "because deploy the corrected server", "@owner"} {
+		if !strings.Contains(sent.Text, want) {
+			t.Errorf("auto-approved message missing %q: %s", want, sent.Text)
+		}
+	}
+	if sent.ParseMode != "HTML" {
+		t.Fatalf("auto-approved parse mode = %q", sent.ParseMode)
+	}
+}

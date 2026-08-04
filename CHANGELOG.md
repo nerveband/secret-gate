@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.2 — 2026-08-04
+
+### Fixed
+
+- Approved, denied, and auto-approved Telegram messages keep the agent, model, project, requested fields, and original reason after the buttons are removed.
+
 ## v0.3.1 — 2026-08-04
 
 ### Fixed

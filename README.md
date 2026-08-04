@@ -251,6 +251,8 @@ Use `exec_with_secret` when the agent does not need to see a value. `read_item_f
 
 Field matching is case-insensitive and ignores spaces, hyphens, and underscores. `mfa`, `otp`, `totp`, `2fa`, and `one-time password` are aliases. `note`, `notes`, `secure note`, and `notesPlain` are aliases. Duplicate labels can be addressed by field ID or `section.label`.
 
+Telegram keeps the full request narrative after a decision. Approved, denied, and auto-approved messages still show the agent, model, project, requested fields, and original reason, followed by who made the decision.
+
 ### Passkeys
 
 Secret Gate reports passkey fields during inspection, but 1Password Connect cannot perform a WebAuthn ceremony or export a passkey private key. Passkey sign-in still requires the 1Password browser extension or app on an interactive device. Secret Gate returns this boundary instead of exposing passkey material or claiming a login succeeded.
