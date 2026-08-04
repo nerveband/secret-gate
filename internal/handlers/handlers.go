@@ -79,8 +79,11 @@ type BatchRequestPayload struct {
 	SecretName string `json:"secret_name,omitempty"`
 	Vault      string `json:"vault,omitempty"`
 	// Common fields
-	Machine string `json:"machine"`
-	Reason  string `json:"reason,omitempty"`
+	Machine  string                `json:"machine"`
+	Reason   string                `json:"reason,omitempty"`
+	Action   string                `json:"action,omitempty"`
+	Context  models.RequestContext `json:"context,omitempty"`
+	Mutation *models.ItemMutation  `json:"mutation,omitempty"`
 }
 
 // RequestResponse is the response for a new secret request
@@ -171,8 +174,27 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Attach batch secrets to the request
 	req.Secrets = secrets
+	req.Action = payload.Action
+	if req.Action == "" {
+		req.Action = "read"
+	}
+	req.Context = payload.Context
+	req.Mutation = payload.Mutation
+	if req.Mutation != nil {
+		if len(secrets) != 1 || secrets[0].Vault == "" || secrets[0].Vault == "_auto_" {
+			h.writeError(w, http.StatusBadRequest, "invalid_mutation", "writes require exactly one item and an explicit vault")
+			return
+		}
+		if req.Mutation.Operation != "create" && req.Mutation.Operation != "update" {
+			h.writeError(w, http.StatusBadRequest, "invalid_mutation", "mutation operation must be create or update")
+			return
+		}
+		req.Action = req.Mutation.Operation
+	}
 
-	if session, ok := h.sessions.Match(); ok {
+	// Mutations always require a per-request approval. A broad read window must
+	// never silently authorize changes to the vault.
+	if session, ok := h.sessions.Match(); ok && req.Mutation == nil {
 		req.Approve()
 		if err := h.store.Save(req); err != nil {
 			h.log.Error("Failed to save auto-approved request", logger.F("error", err.Error(), "request_id", req.ID))
@@ -342,6 +364,20 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Mutation != nil {
+		s := req.Secrets[0]
+		item, mutationErr := h.opClient.PutItem(s.Vault, s.SecretName, req.Mutation.Operation, req.Mutation.Category, req.Mutation.Fields)
+		if mutationErr != nil {
+			h.log.Error("Failed to write 1Password item", logger.F("error", mutationErr.Error(), "request_id", req.ID, "item", s.SecretName, "vault", s.Vault))
+			h.writeError(w, http.StatusInternalServerError, "item_write_failed", "Failed to write item to 1Password")
+			return
+		}
+		h.log.Info("1Password item written", logger.F("request_id", req.ID, "item", item.Title, "vault", s.Vault, "operation", req.Mutation.Operation))
+		h.store.Delete(token)
+		h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{"status": "completed", "operation": req.Mutation.Operation, "item": item.Title, "vault": s.Vault}})
+		return
+	}
+
 	// Batch mode: multiple secrets requested or field filtering specified
 	if len(req.Secrets) > 1 || (len(req.Secrets) == 1 && len(req.Secrets[0].Fields) > 0) {
 		result := make(map[string]map[string]string)
@@ -378,8 +414,8 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 			if len(s.Fields) > 0 {
 				filtered := make(map[string]string)
 				for _, f := range s.Fields {
-					if val, ok := allFields[f]; ok {
-						filtered[f] = val
+					if actual, val, ok := resolveRequestedField(allFields, f); ok {
+						filtered[actual] = val
 					}
 				}
 				result[actualName] = filtered
@@ -419,6 +455,32 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("Secret retrieved", logger.F("request_id", req.ID, "secret", actualSecret, "vault", actualVault))
 	h.store.Delete(token)
 	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret})
+}
+
+func resolveRequestedField(values map[string]string, wanted string) (string, string, bool) {
+	normalize := func(s string) string {
+		return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(s)))
+	}
+	w := normalize(wanted)
+	aliases := map[string]bool{}
+	switch w {
+	case "otp", "totp", "mfa", "2fa", "onetimepassword":
+		for _, a := range []string{"otp", "totp", "mfa", "2fa", "onetimepassword"} {
+			aliases[a] = true
+		}
+	case "note", "notes", "notesplain", "securenote":
+		for _, a := range []string{"note", "notes", "notesplain", "securenote"} {
+			aliases[a] = true
+		}
+	default:
+		aliases[w] = true
+	}
+	for name, value := range values {
+		if aliases[normalize(name)] {
+			return name, value, true
+		}
+	}
+	return "", "", false
 }
 
 // HandleHealth handles GET /health
@@ -566,8 +628,8 @@ func OpenAPISpec() string {
   "openapi": "3.0.3",
   "info": {
     "title": "Secret Gate API",
-    "description": "Human-in-the-loop approval gateway for agent access to secrets. Requests are approved via Telegram before secrets are released. Supports both single-item (legacy) and batch secret requests.",
-    "version": "1.1.0"
+    "description": "Human-in-the-loop gateway for approved reads and writes to 1Password items.",
+    "version": "0.3.0"
   },
   "servers": [
     {"url": "/", "description": "Relative to deployment URL"}
@@ -622,6 +684,31 @@ func OpenAPISpec() string {
                   "reason": {
                     "type": "string",
                     "description": "Reason for requesting access (shown in approval notification)"
+                  },
+                  "action": {
+                    "type": "string",
+                    "description": "Requested action. Defaults to read; create and update are set from mutation.operation."
+                  },
+                  "context": {
+                    "type": "object",
+                    "description": "Human-readable agent context shown in Telegram.",
+                    "properties": {
+                      "agent": {"type": "string"},
+                      "model": {"type": "string"},
+                      "think": {"type": "string"},
+                      "project": {"type": "string"},
+                      "task": {"type": "string"}
+                    }
+                  },
+                  "mutation": {
+                    "type": "object",
+                    "description": "Approval-gated item creation or update. Requires one item and an explicit vault.",
+                    "required": ["operation", "fields"],
+                    "properties": {
+                      "operation": {"type": "string", "enum": ["create", "update"]},
+                      "category": {"type": "string", "description": "1Password category for a new item. Defaults to SECURE_NOTE."},
+                      "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+                    }
                   }
                 }
               },
@@ -767,8 +854,12 @@ func OpenAPISpec() string {
                       "items": {
                         "type": "object",
                         "properties": {
-                          "label": {"type": "string", "description": "Field label (use this in the fields array when requesting)"},
-                          "type": {"type": "string", "description": "Field type (e.g., STRING, CONCEALED, URL, EMAIL, OTP)"}
+                          "id": {"type": "string", "description": "Stable field ID"},
+                          "label": {"type": "string", "description": "Field label"},
+                          "type": {"type": "string", "description": "Field type (for example STRING, CONCEALED, URL, EMAIL, OTP, or PASSKEY)"},
+                          "purpose": {"type": "string"},
+                          "section": {"type": "string", "description": "Section label; combine with the field label as section.label when labels repeat"},
+                          "reference": {"type": "string", "description": "1Password secret reference when supplied by Connect"}
                         }
                       }
                     }

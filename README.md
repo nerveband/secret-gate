@@ -2,7 +2,7 @@
 
 **Human-in-the-loop secret approval for AI coding agents. Retrieve secrets from 1Password with Telegram-based approval.**
 
-![CI](https://github.com/johnuopini/secret-gate/actions/workflows/test.yml/badge.svg)
+![CI](https://github.com/nerveband/secret-gate/actions/workflows/test.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ---
@@ -48,7 +48,7 @@ Agent: "I need the deploy SSH key"
 → Done.
 ```
 
-One tap on your phone. Zero secrets on disk. Zero manual shell approvals. The agent never sees the secret value — it's injected into the subprocess environment only.
+One tap on your phone. Zero secrets on disk. Zero manual shell approvals. Commands can receive values without putting them in model context; approved notes and OTP codes can be returned when the task requires them.
 
 ## How It Works
 
@@ -62,13 +62,13 @@ One tap on your phone. Zero secrets on disk. Zero manual shell approvals. The ag
 
 ```bash
 # 1. Clone and start the server
-git clone https://github.com/johnuopini/secret-gate.git
+git clone https://github.com/nerveband/secret-gate.git
 cd secret-gate
 cp .env.example .env  # Edit with your credentials
 docker compose up -d
 
 # 2. Install the client + AI tool integration
-curl -sL https://raw.githubusercontent.com/johnuopini/secret-gate/main/install.sh | bash -s -- --server http://localhost:8080
+curl -sL https://raw.githubusercontent.com/nerveband/secret-gate/main/install.sh | bash -s -- --server http://localhost:8080
 
 # 3. That's it — your AI coding tool will auto-detect the skill
 ```
@@ -105,7 +105,7 @@ docker run -d \
   -e TELEGRAM_BOT_TOKEN=your-bot-token \
   -e TELEGRAM_CHAT_ID=your-chat-id \
   -e WEBHOOK_BASE_URL=https://gate.example.com \
-  ghcr.io/johnuopini/secret-gate:latest
+  ghcr.io/nerveband/secret-gate:latest
 ```
 
 ### Binary
@@ -148,7 +148,7 @@ sudo mv secret-gate /usr/local/bin/
 
 ### From GitHub Releases
 
-Download the latest release from [github.com/johnuopini/secret-gate/releases](https://github.com/johnuopini/secret-gate/releases).
+Download the latest release from [github.com/nerveband/secret-gate/releases](https://github.com/nerveband/secret-gate/releases).
 
 ### From source
 
@@ -190,6 +190,9 @@ Add to `~/.claude/settings.json` under `permissions.allow`:
 | `search_secrets` | Search 1Password items by name |
 | `inspect_fields` | List field names/types without values |
 | `request_secret` | Request access with Telegram approval (returns status, not the value) |
+| `read_item_fields` | Read any approved field by label, ID, or `section.label`; omit fields to read the whole item |
+| `get_otp` | Generate the current MFA/OTP/TOTP/2FA code from an approved OTP field |
+| `write_item` | Create or update a 1Password item after Telegram approval |
 | `exec_with_secret` | Run a command with a secret injected as an env var |
 | `ssh_with_secret` | SSH to a host using an approved SSH key |
 | `daemon_status` | Check cache daemon status |
@@ -207,7 +210,42 @@ ssh_with_secret(secret_name="prod-deploy-key", host="deploy@prod", command="kube
 → {exit_code: 0, stdout: "deployment.apps/app restarted"}
 ```
 
-The agent never sees the secret value. It's injected into the subprocess environment only.
+For a secure note or custom context field:
+
+```
+inspect_fields(secret_name="release-account", vault="Agents")
+→ fields include IDs, labels, types, purposes, sections, and references
+
+request_secret(
+  secret_name="release-account",
+  vault="Agents",
+  fields=["notes", "context"],
+  reason="read the release instructions",
+  context={agent: "Codex", model: "gpt-5.6-luna", think: "low", project: "ts-project", task: "publish the release"}
+)
+→ Telegram explains who needs which fields and why
+
+read_item_fields(secret_name="release-account", vault="Agents", fields=["notes", "context"])
+→ returns only the approved fields
+```
+
+For MFA, request any OTP alias and then generate the current code:
+
+```
+request_secret(secret_name="release-account", vault="Agents", fields=["mfa"], reason="complete sign-in")
+get_otp(secret_name="release-account", vault="Agents", field="2fa")
+→ {code: "…", expires_at: "…"}
+```
+
+Writes also use Telegram approval. Create and update values stay in server memory while the request is pending. Write requests never qualify for an approval window.
+
+Use `exec_with_secret` when the agent does not need to see a value. `read_item_fields` intentionally returns approved values to the agent for tasks that require their contents, such as reading a secure note. Request only the fields needed for the task.
+
+Field matching is case-insensitive and ignores spaces, hyphens, and underscores. `mfa`, `otp`, `totp`, `2fa`, and `one-time password` are aliases. `note`, `notes`, `secure note`, and `notesPlain` are aliases. Duplicate labels can be addressed by field ID or `section.label`.
+
+### Passkeys
+
+Secret Gate reports passkey fields during inspection, but 1Password Connect cannot perform a WebAuthn ceremony or export a passkey private key. Passkey sign-in still requires the 1Password browser extension or app on an interactive device. Secret Gate returns this boundary instead of exposing passkey material or claiming a login succeeded.
 
 ### Skill Files (fallback)
 
@@ -217,11 +255,11 @@ For tools that don't support MCP, Secret Gate ships with skill files that teach 
 
 ```bash
 # Auto-detect and install for all detected tools
-curl -sL https://raw.githubusercontent.com/johnuopini/secret-gate/main/install.sh | bash -s -- \
+curl -sL https://raw.githubusercontent.com/nerveband/secret-gate/main/install.sh | bash -s -- \
   --server https://your-server
 
 # Install for a specific tool
-curl -sL https://raw.githubusercontent.com/johnuopini/secret-gate/main/install.sh | bash -s -- \
+curl -sL https://raw.githubusercontent.com/nerveband/secret-gate/main/install.sh | bash -s -- \
   --server https://your-server --tool claude-code
 ```
 
@@ -280,7 +318,8 @@ For detailed request/response schemas, see the OpenAPI spec at `/openapi.json` o
 ## Security
 
 - **Memory-only cache.** Cached secret values stay in the daemon process. SSH-agent integration uses a mode-`0600` temporary private-key file because `ssh-add` accepts a path; the file is removed immediately after `ssh-add` returns. If `ssh-add` fails, `ssh_with_secret` uses another short-lived mode-`0600` file with `ssh -i` and removes it when SSH exits.
-- **No secrets in agent context.** MCP tools execute commands with secrets injected as env vars — the agent never sees the actual values.
+- **Controlled agent visibility.** `exec_with_secret` and `ssh_with_secret` keep values out of agent context. `read_item_fields` and `get_otp` return only values covered by the approved item/field request because some tasks require the agent to read them.
+- **Approval-gated writes.** Create and update values stay in server memory while pending, are omitted from Telegram and logs, and are sent to 1Password only after approval.
 - **Unix socket IPC.** The daemon listens on a Unix socket with `0600` permissions, accessible only to the owning user.
 - **SSH agent integration.** SSH keys are added to ssh-agent with a TTL that matches the cache expiry, so they are automatically removed.
 - **Telegram approval gate.** Secret access requires explicit human approval through Telegram inline buttons. The optional "Approve window" button creates a global, in-memory approval session that approves all requests until the window expires.

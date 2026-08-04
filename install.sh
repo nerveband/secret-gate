@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SKILL_NAME="secret-gate"
-GITHUB_REPO="johnuopini/secret-gate"
+GITHUB_REPO="nerveband/secret-gate"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
 
 # Parse args

@@ -95,6 +95,10 @@ func main() {
 			log.Info("Request approved", logger.F("request_id", req.ID, "approver", approver))
 
 		case "approve_window":
+			if req.Mutation != nil {
+				tgClient.AnswerCallbackQuery(callback.ID, "Writes require approval once")
+				return
+			}
 			req.Approve()
 			session := sessionStore.Create(approver, cfg.AutoApproveTTL)
 			if err := requestStore.Update(req); err != nil {

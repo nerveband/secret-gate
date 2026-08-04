@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -61,10 +62,24 @@ type fieldsResponse struct {
 }
 
 type requestPayload struct {
-	SecretName string `json:"secret_name"`
-	Vault      string `json:"vault,omitempty"`
-	Machine    string `json:"machine"`
-	Reason     string `json:"reason,omitempty"`
+	SecretName string                 `json:"secret_name"`
+	Vault      string                 `json:"vault,omitempty"`
+	Machine    string                 `json:"machine"`
+	Reason     string                 `json:"reason,omitempty"`
+	Action     string                 `json:"action,omitempty"`
+	Secrets    []secretRequestPayload `json:"secrets,omitempty"`
+	Context    RequestContext         `json:"context,omitempty"`
+	Mutation   *mutationPayload       `json:"mutation,omitempty"`
+}
+type secretRequestPayload struct {
+	SecretName string   `json:"secret_name"`
+	Vault      string   `json:"vault,omitempty"`
+	Fields     []string `json:"fields,omitempty"`
+}
+type mutationPayload struct {
+	Operation string            `json:"operation"`
+	Category  string            `json:"category,omitempty"`
+	Fields    map[string]string `json:"fields"`
 }
 
 type requestResponse struct {
@@ -169,18 +184,69 @@ func (p *httpProxyClient) GetFields(secretName, vault string) (*FieldsResult, er
 	}, nil
 }
 
-func (p *httpProxyClient) Request(ctx context.Context, secretName, vault, reason string) (*RequestResult, error) {
+func (p *httpProxyClient) Request(ctx context.Context, secretName, vault, reason string, fields []string, requestContext RequestContext) (*RequestResult, error) {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "mcp-agent"
 	}
 
+	requestContext = enrichRequestContext(requestContext, hostname, reason)
 	payload := requestPayload{
 		SecretName: secretName,
 		Vault:      vault,
 		Machine:    hostname,
 		Reason:     reason,
+		Action:     "read",
+		Secrets:    []secretRequestPayload{{SecretName: secretName, Vault: vault, Fields: fields}},
+		Context:    requestContext,
 	}
+	return p.submitAndWait(ctx, payload, secretName, vault, true)
+}
+
+func (p *httpProxyClient) Write(ctx context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error) {
+	hostname, _ := os.Hostname()
+	requestContext = enrichRequestContext(requestContext, hostname, reason)
+	payload := requestPayload{SecretName: secretName, Vault: vault, Machine: hostname, Reason: reason, Action: operation, Secrets: []secretRequestPayload{{SecretName: secretName, Vault: vault}}, Context: requestContext, Mutation: &mutationPayload{Operation: operation, Category: category, Fields: fields}}
+	return p.submitAndWait(ctx, payload, secretName, vault, false)
+}
+
+func enrichRequestContext(requestContext RequestContext, hostname, reason string) RequestContext {
+	if requestContext.Agent == "" {
+		requestContext.Agent = firstEnv("SECRET_GATE_AGENT", "CODEX_AGENT_NAME")
+		if requestContext.Agent == "" {
+			requestContext.Agent = "Codex"
+		}
+	}
+	if requestContext.Model == "" {
+		requestContext.Model = firstEnv("SECRET_GATE_MODEL", "OPENAI_MODEL", "CODEX_MODEL")
+	}
+	if requestContext.Think == "" {
+		requestContext.Think = firstEnv("SECRET_GATE_THINK", "CODEX_REASONING_EFFORT")
+	}
+	if requestContext.Project == "" {
+		if wd, err := os.Getwd(); err == nil {
+			requestContext.Project = filepath.Base(wd)
+		}
+		if requestContext.Project == "" {
+			requestContext.Project = hostname
+		}
+	}
+	if requestContext.Task == "" {
+		requestContext.Task = reason
+	}
+	return requestContext
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (p *httpProxyClient) submitAndWait(ctx context.Context, payload requestPayload, secretName, vault string, cache bool) (*RequestResult, error) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -238,8 +304,19 @@ func (p *httpProxyClient) Request(ctx context.Context, secretName, vault, reason
 			case "pending":
 				continue
 			case "approved":
-				// Step 3: Retrieve secret and cache it
-				return p.retrieveAndCache(status.SecretURL, secretName, vault)
+				if cache {
+					return p.retrieveAndCache(status.SecretURL, secretName, vault)
+				}
+				resp, err := p.httpClient.Get(status.SecretURL)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					b, _ := io.ReadAll(resp.Body)
+					return nil, fmt.Errorf("write failed with status %d: %s", resp.StatusCode, string(b))
+				}
+				return &RequestResult{Status: "completed", SecretName: secretName, Message: "1Password item written after approval."}, nil
 			case "denied":
 				return &RequestResult{
 					Status:     "denied",

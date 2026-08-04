@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-08-04
+
+### Added
+
+- Agents can read any approved item field by label, field ID, or `section.label`, including secure notes and duplicate labels in separate sections.
+- MFA, OTP, TOTP, 2FA, and one-time-password aliases resolve to the same field; `get_otp` generates RFC 6238 codes with expiry timestamps.
+- `write_item` creates or updates 1Password items after Telegram approval without showing values in Telegram or logs.
+- Approval requests accept agent, model, thinking level, project, and task context.
 
 ### Changed
 
+- Telegram approval messages now read as short human requests with selective emphasis instead of a label/value form.
 - The Telegram approval window now approves all secret requests for its full duration. It is not limited by requester, IP address, vault, item, or field.
 - The local Docker Compose stack now binds its published ports to loopback and its setup checks use the published `18080`/`18081` ports.
 - CI now uses Go 1.25 and runs the portable client tests natively on macOS.

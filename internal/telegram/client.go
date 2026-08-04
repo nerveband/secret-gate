@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -109,60 +110,18 @@ func New(token string, chatID int64) *Client {
 
 // SendApprovalRequest sends an approval request message with approve/deny buttons.
 func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL string, autoApproveTTL time.Duration) (int, error) {
-	var secretsList string
-	if len(req.Secrets) > 1 {
-		secretsList = fmt.Sprintf("*Secrets (%d items):*\n", len(req.Secrets))
-		for _, s := range req.Secrets {
-			vault := s.Vault
-			if vault == "" {
-				vault = "auto"
-			}
-			if len(s.Fields) > 0 {
-				secretsList += fmt.Sprintf("  • `%s` (vault: %s, fields: %s)\n",
-					escapeMarkdown(s.SecretName), escapeMarkdown(vault),
-					escapeMarkdown(strings.Join(s.Fields, ", ")))
-			} else {
-				secretsList += fmt.Sprintf("  • `%s` (vault: %s)\n",
-					escapeMarkdown(s.SecretName), escapeMarkdown(vault))
-			}
-		}
-	} else {
-		secretsList = fmt.Sprintf("*Secret:* `%s`\n*Vault:* `%s`\n",
-			escapeMarkdown(req.SecretName), escapeMarkdown(req.Vault))
-	}
+	text := approvalMessage(req)
 
-	text := fmt.Sprintf(
-		"🔐 *Secret Access Request*\n\n"+
-			"%s"+
-			"*Machine:* `%s`\n"+
-			"*IP:* `%s`\n"+
-			"*Reason:* %s\n"+
-			"*Expires:* %s\n\n"+
-			"*Request ID:* `%s`",
-		secretsList,
-		escapeMarkdown(req.RequesterMachine),
-		req.RequesterIP,
-		escapeMarkdown(defaultIfEmpty(req.Reason, "Not provided")),
-		req.ExpiresAt.Format("15:04:05 MST"),
-		req.ID,
-	)
-
-	keyboard := &InlineKeyboardMarkup{
-		InlineKeyboard: [][]InlineKeyboardButton{
-			{
-				{Text: "✅ Approve once", CallbackData: fmt.Sprintf("approve:%s", req.ID)},
-				{Text: fmt.Sprintf("✅ Approve %s", formatDurationLabel(autoApproveTTL)), CallbackData: fmt.Sprintf("approve_window:%s", req.ID)},
-			},
-			{
-				{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)},
-			},
-		},
+	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: fmt.Sprintf("approve:%s", req.ID)}}
+	if req.Mutation == nil {
+		approveRow = append(approveRow, InlineKeyboardButton{Text: fmt.Sprintf("✅ Approve %s", formatDurationLabel(autoApproveTTL)), CallbackData: fmt.Sprintf("approve_window:%s", req.ID)})
 	}
+	keyboard := &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)}}}}
 
 	msgReq := SendMessageRequest{
 		ChatID:      c.chatID,
 		Text:        text,
-		ParseMode:   "Markdown",
+		ParseMode:   "HTML",
 		ReplyMarkup: keyboard,
 	}
 
@@ -197,6 +156,39 @@ func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL
 	}
 
 	return msg.MessageID, nil
+}
+
+func approvalMessage(req *models.ApprovalRequest) string {
+	esc := html.EscapeString
+	agent := defaultIfEmpty(req.Context.Agent, req.RequesterMachine)
+	model := defaultIfEmpty(req.Context.Model, "an agent")
+	if req.Context.Think != "" {
+		model += " (" + req.Context.Think + " think)"
+	}
+	project := defaultIfEmpty(req.Context.Project, "an unspecified project")
+	action := defaultIfEmpty(req.Action, "read")
+	var wants []string
+	for _, s := range req.Secrets {
+		fields := "all fields"
+		if len(s.Fields) > 0 {
+			fields = strings.Join(s.Fields, ", ")
+		}
+		vault := defaultIfEmpty(s.Vault, "an automatically selected vault")
+		wants = append(wants, fmt.Sprintf("<b>%s</b> from <b>%s</b> (%s)", esc(s.SecretName), esc(vault), esc(fields)))
+	}
+	if len(wants) == 0 {
+		wants = []string{fmt.Sprintf("<b>%s</b> from <b>%s</b>", esc(req.SecretName), esc(req.Vault))}
+	}
+	purpose := defaultIfEmpty(req.Context.Task, req.Reason)
+	purpose = defaultIfEmpty(purpose, "No reason was provided.")
+	return fmt.Sprintf(
+		"🔐 <b>1Password request</b>\n\n"+
+			"<b>%s</b>, using <b>%s</b>, is working in <b>%s</b> and wants to <b>%s</b>:\n%s\n\n"+
+			"They need it because %s\n\n"+
+			"Do you approve this request?\n\n"+
+			"Expires %s · ID <code>%s</code>",
+		esc(agent), esc(model), esc(project), esc(action), "• "+strings.Join(wants, "\n• "),
+		esc(purpose), req.ExpiresAt.Format("15:04 MST"), esc(req.ID))
 }
 
 func formatDurationLabel(d time.Duration) string {

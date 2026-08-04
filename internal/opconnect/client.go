@@ -24,11 +24,18 @@ type Client struct {
 
 // Item represents a 1Password item
 type Item struct {
-	ID      string  `json:"id"`
-	Title   string  `json:"title"`
-	Vault   Vault   `json:"vault"`
-	Fields  []Field `json:"fields"`
-	Version int     `json:"version"`
+	ID       string    `json:"id"`
+	Title    string    `json:"title"`
+	Vault    Vault     `json:"vault"`
+	Fields   []Field   `json:"fields"`
+	Version  int       `json:"version"`
+	Category string    `json:"category,omitempty"`
+	Sections []Section `json:"sections,omitempty"`
+}
+
+type Section struct {
+	ID    string `json:"id"`
+	Label string `json:"label,omitempty"`
 }
 
 // Vault represents a 1Password vault reference
@@ -39,11 +46,13 @@ type Vault struct {
 
 // Field represents a field in a 1Password item
 type Field struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Purpose string `json:"purpose,omitempty"`
-	Label   string `json:"label"`
-	Value   string `json:"value"`
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Purpose   string   `json:"purpose,omitempty"`
+	Label     string   `json:"label"`
+	Value     string   `json:"value"`
+	Section   *Section `json:"section,omitempty"`
+	Reference string   `json:"reference,omitempty"`
 }
 
 // New creates a new 1Password Connect client
@@ -180,15 +189,7 @@ func (c *Client) GetSecret(vaultName, itemTitle string) (map[string]string, erro
 		return nil, fmt.Errorf("getting item: %w", err)
 	}
 
-	// Convert fields to a map
-	fields := make(map[string]string)
-	for _, f := range item.Fields {
-		if f.Label != "" {
-			fields[f.Label] = normalizeFieldValue(f)
-		}
-	}
-
-	return fields, nil
+	return itemFieldValues(item), nil
 }
 
 // HealthCheck verifies connectivity to 1Password Connect
@@ -222,8 +223,12 @@ type SearchResult struct {
 
 // FieldInfo holds metadata about a field without its value
 type FieldInfo struct {
-	Label string `json:"label"`
-	Type  string `json:"type"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Type      string `json:"type"`
+	Purpose   string `json:"purpose,omitempty"`
+	Section   string `json:"section,omitempty"`
+	Reference string `json:"reference,omitempty"`
 }
 
 // GetItemFields returns field metadata for an item without values
@@ -280,15 +285,121 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 
 	var fields []FieldInfo
 	for _, f := range item.Fields {
-		if f.Label != "" {
+		if f.Label != "" || f.ID != "" {
+			section := ""
+			if f.Section != nil {
+				section = f.Section.Label
+			}
 			fields = append(fields, FieldInfo{
-				Label: f.Label,
-				Type:  f.Type,
+				ID:        f.ID,
+				Label:     f.Label,
+				Type:      f.Type,
+				Purpose:   f.Purpose,
+				Section:   section,
+				Reference: f.Reference,
 			})
 		}
 	}
 
 	return fields, actualVault, actualTitle, nil
+}
+
+// PutItem creates or replaces an item through 1Password Connect. For updates,
+// the existing item is fetched and modified so unknown fields and sections are
+// preserved.
+func (c *Client) PutItem(vaultName, itemTitle, operation, category string, values map[string]string) (*Item, error) {
+	vaults, err := c.GetVaults()
+	if err != nil {
+		return nil, fmt.Errorf("listing vaults: %w", err)
+	}
+	var vaultID string
+	for _, v := range vaults {
+		if v.Name == vaultName || v.ID == vaultName {
+			vaultID = v.ID
+			break
+		}
+	}
+	if vaultID == "" {
+		return nil, fmt.Errorf("vault not found: %s", vaultName)
+	}
+
+	var item Item
+	method := http.MethodPost
+	endpoint := fmt.Sprintf("%s/v1/vaults/%s/items", c.baseURL, vaultID)
+	if operation == "update" {
+		existing, getErr := c.GetItemByTitle(vaultID, itemTitle)
+		if getErr != nil {
+			return nil, getErr
+		}
+		item = *existing
+		method = http.MethodPut
+		endpoint += "/" + existing.ID
+	} else if operation == "create" {
+		if category == "" {
+			category = "SECURE_NOTE"
+		}
+		item = Item{Title: itemTitle, Vault: Vault{ID: vaultID}, Category: category}
+	} else {
+		return nil, fmt.Errorf("unsupported mutation operation %q", operation)
+	}
+
+	for label, value := range values {
+		found := false
+		for i := range item.Fields {
+			if item.Fields[i].Label == label || item.Fields[i].ID == label {
+				item.Fields[i].Value = value
+				found = true
+				break
+			}
+		}
+		if !found {
+			item.Fields = append(item.Fields, newField(label, value))
+		}
+	}
+	body, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("encoding item: %w", err)
+	}
+	req, err := http.NewRequest(method, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
+	}
+	var saved Item
+	if err := json.NewDecoder(resp.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &saved, nil
+}
+
+func newField(label, value string) Field {
+	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(label))
+	field := Field{ID: label, Label: label, Type: "STRING", Value: value}
+	switch normalized {
+	case "otp", "totp", "mfa", "2fa", "onetimepassword":
+		field.Type = "OTP"
+	case "note", "notes", "notesplain", "securenote":
+		field.ID = "notesPlain"
+		field.Label = "notesPlain"
+		field.Purpose = "NOTES"
+	case "password", "passphrase", "secret", "token", "apikey", "privatekey":
+		field.Type = "CONCEALED"
+	case "url", "website", "loginurl":
+		field.Type = "URL"
+	case "email", "emailaddress":
+		field.Type = "EMAIL"
+	}
+	return field
 }
 
 // ListItemsInVault returns all items in a vault (titles only, no fields)
@@ -403,15 +514,35 @@ func (c *Client) FindSecretAcrossVaults(secretName string) (map[string]string, s
 		return nil, "", "", fmt.Errorf("getting item: %w", err)
 	}
 
-	// Convert fields to a map
+	return itemFieldValues(item), best.VaultName, best.Item.Title, nil
+}
+
+// itemFieldValues provides convenient labels while retaining stable selectors.
+// Duplicate labels remain reachable by field ID and section.label.
+func itemFieldValues(item *Item) map[string]string {
 	fields := make(map[string]string)
+	labelCounts := make(map[string]int)
 	for _, f := range item.Fields {
 		if f.Label != "" {
-			fields[f.Label] = normalizeFieldValue(f)
+			labelCounts[f.Label]++
 		}
 	}
-
-	return fields, best.VaultName, best.Item.Title, nil
+	for _, f := range item.Fields {
+		value := normalizeFieldValue(f)
+		if f.ID != "" {
+			fields[f.ID] = value
+		}
+		if f.Label == "" {
+			continue
+		}
+		if labelCounts[f.Label] == 1 {
+			fields[f.Label] = value
+		}
+		if f.Section != nil && f.Section.Label != "" {
+			fields[f.Section.Label+"."+f.Label] = value
+		}
+	}
+	return fields
 }
 
 func normalizeFieldValue(f Field) string {

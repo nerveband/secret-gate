@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/otp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -40,7 +41,8 @@ type FullDaemonClient interface {
 type ProxyClient interface {
 	Search(query string, limit int) ([]SearchResultItem, error)
 	GetFields(secretName, vault string) (*FieldsResult, error)
-	Request(ctx context.Context, secretName, vault, reason string) (*RequestResult, error)
+	Request(ctx context.Context, secretName, vault, reason string, fields []string, requestContext RequestContext) (*RequestResult, error)
+	Write(ctx context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error)
 }
 
 // --- Shared types ---
@@ -64,8 +66,20 @@ type SearchResultItem struct {
 
 // FieldInfo holds field metadata (name and type, no values).
 type FieldInfo struct {
-	Label string `json:"label"`
-	Type  string `json:"type"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Type      string `json:"type"`
+	Purpose   string `json:"purpose,omitempty"`
+	Section   string `json:"section,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
+
+type RequestContext struct {
+	Agent   string `json:"agent,omitempty" jsonschema:"agent name, such as Codex"`
+	Model   string `json:"model,omitempty" jsonschema:"model name"`
+	Think   string `json:"think,omitempty" jsonschema:"thinking level"`
+	Project string `json:"project,omitempty" jsonschema:"project or repository name"`
+	Task    string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
 }
 
 // FieldsResult holds the result of inspecting fields.
@@ -106,9 +120,41 @@ type InspectFieldsInput struct {
 }
 
 type RequestSecretInput struct {
-	SecretName string `json:"secret_name" jsonschema:"name of the secret to request"`
-	Vault      string `json:"vault,omitempty" jsonschema:"vault name (optional)"`
-	Reason     string `json:"reason" jsonschema:"reason for requesting access (shown in Telegram approval)"`
+	SecretName string         `json:"secret_name" jsonschema:"name of the secret to request"`
+	Vault      string         `json:"vault,omitempty" jsonschema:"vault name (optional)"`
+	Reason     string         `json:"reason" jsonschema:"reason for requesting access (shown in Telegram approval)"`
+	Fields     []string       `json:"fields,omitempty" jsonschema:"specific field labels or IDs to approve"`
+	Context    RequestContext `json:"context,omitempty"`
+}
+
+type WriteItemInput struct {
+	SecretName string            `json:"secret_name" jsonschema:"item title"`
+	Vault      string            `json:"vault" jsonschema:"explicit vault name or ID"`
+	Operation  string            `json:"operation" jsonschema:"create or update"`
+	Category   string            `json:"category,omitempty" jsonschema:"1Password category for new items; defaults to SECURE_NOTE"`
+	Fields     map[string]string `json:"fields" jsonschema:"field labels mapped to values to store"`
+	Reason     string            `json:"reason" jsonschema:"why this write is needed"`
+	Context    RequestContext    `json:"context,omitempty"`
+}
+
+type ReadFieldsInput struct {
+	SecretName string   `json:"secret_name"`
+	Vault      string   `json:"vault,omitempty"`
+	Fields     []string `json:"fields,omitempty"`
+}
+type ReadFieldsOutput struct {
+	SecretName string            `json:"secret_name"`
+	Fields     map[string]string `json:"fields"`
+}
+type GetOTPInput struct {
+	SecretName string `json:"secret_name"`
+	Vault      string `json:"vault,omitempty"`
+	Field      string `json:"field,omitempty" jsonschema:"OTP field; mfa, otp, totp, 2fa, and one-time password are aliases"`
+}
+type GetOTPOutput struct {
+	Code       string `json:"code"`
+	ExpiresAt  string `json:"expires_at"`
+	SecretUsed string `json:"secret_used"`
 }
 
 type ExecWithSecretInput struct {
@@ -173,7 +219,7 @@ type Config struct {
 func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "secret-gate",
-		Version: "1.0.0",
+		Version: "0.3.0",
 	}, nil)
 
 	// Register all tools
@@ -182,6 +228,18 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 		Description: "Check the status of the secret-gate cache daemon. Returns whether it is running, uptime, cached entry count, and socket path.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input DaemonStatusInput) (*mcp.CallToolResult, DaemonStatusOutput, error) {
 		return handleDaemonStatus(ctx, dc)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "read_item_fields", Description: "Read fields from a previously approved and cached 1Password item. Omit fields to read every approved field. Fields can be addressed by label, field ID, or section.label; notes aliases are accepted. Returned values enter model context."}, func(ctx context.Context, req *mcp.CallToolRequest, input ReadFieldsInput) (*mcp.CallToolResult, ReadFieldsOutput, error) {
+		return handleReadFields(ctx, dc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "write_item", Description: "Create or update a 1Password item after Telegram approval. Values are held only in server memory while pending and are never shown in Telegram or logs. An explicit vault is required."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+		return handleWriteItem(ctx, pc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "get_otp", Description: "Generate the current MFA/OTP/TOTP/2FA code from a previously approved 1Password OTP field. These terms are interchangeable."}, func(ctx context.Context, req *mcp.CallToolRequest, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
+		return handleGetOTP(ctx, dc, input)
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -286,7 +344,14 @@ func handleRequestSecret(ctx context.Context, dc FullDaemonClient, pc ProxyClien
 	// Check if already cached in daemon
 	if dc.IsRunning() {
 		cached, err := dc.Get(input.SecretName, input.Vault)
-		if err == nil && cached != nil {
+		requestedAvailable := err == nil && cached != nil
+		for _, field := range input.Fields {
+			if _, _, ok := resolveField(cached, field); !ok {
+				requestedAvailable = false
+				break
+			}
+		}
+		if requestedAvailable {
 			fieldNames := make([]string, 0, len(cached))
 			for k := range cached {
 				fieldNames = append(fieldNames, k)
@@ -302,11 +367,99 @@ func handleRequestSecret(ctx context.Context, dc FullDaemonClient, pc ProxyClien
 	}
 
 	// Submit request via proxy
-	result, err := pc.Request(ctx, input.SecretName, input.Vault, input.Reason)
+	result, err := pc.Request(ctx, input.SecretName, input.Vault, input.Reason, input.Fields, input.Context)
 	if err != nil {
 		return toolError("failed to request secret: " + err.Error()), RequestSecretOutput{}, nil
 	}
 
+	return nil, *result, nil
+}
+
+func handleReadFields(_ context.Context, dc FullDaemonClient, input ReadFieldsInput) (*mcp.CallToolResult, ReadFieldsOutput, error) {
+	if input.SecretName == "" {
+		return toolError("secret_name is required"), ReadFieldsOutput{}, nil
+	}
+	values, err := dc.Get(input.SecretName, input.Vault)
+	if err != nil {
+		return toolError("item is not approved and cached; call request_secret first"), ReadFieldsOutput{}, nil
+	}
+	out := make(map[string]string, len(input.Fields))
+	if len(input.Fields) == 0 {
+		for name, value := range values {
+			out[name] = value
+		}
+		return nil, ReadFieldsOutput{SecretName: input.SecretName, Fields: out}, nil
+	}
+	for _, name := range input.Fields {
+		actual, value, ok := resolveField(values, name)
+		if !ok {
+			return toolError(fmt.Sprintf("field %q is not available", name)), ReadFieldsOutput{}, nil
+		}
+		out[actual] = value
+	}
+	return nil, ReadFieldsOutput{SecretName: input.SecretName, Fields: out}, nil
+}
+
+func handleGetOTP(_ context.Context, dc FullDaemonClient, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
+	if input.SecretName == "" {
+		return toolError("secret_name is required"), GetOTPOutput{}, nil
+	}
+	values, err := dc.Get(input.SecretName, input.Vault)
+	if err != nil {
+		return toolError("item is not approved and cached; call request_secret first"), GetOTPOutput{}, nil
+	}
+	wanted := input.Field
+	if wanted == "" {
+		wanted = "otp"
+	}
+	actual, seed, ok := resolveField(values, wanted)
+	if !ok {
+		return toolError("no OTP/MFA/TOTP/2FA field is available in this item"), GetOTPOutput{}, nil
+	}
+	code, expires, err := otp.Generate(seed, time.Now())
+	if err != nil {
+		return toolError("could not generate OTP: " + err.Error()), GetOTPOutput{}, nil
+	}
+	return nil, GetOTPOutput{Code: code, ExpiresAt: expires.UTC().Format(time.RFC3339), SecretUsed: input.SecretName + "/" + actual}, nil
+}
+
+func resolveField(values map[string]string, wanted string) (string, string, bool) {
+	normalize := func(s string) string {
+		return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(s)))
+	}
+	w := normalize(wanted)
+	aliases := map[string]bool{}
+	switch w {
+	case "otp", "totp", "mfa", "2fa", "onetimepassword":
+		for _, a := range []string{"otp", "totp", "mfa", "2fa", "onetimepassword"} {
+			aliases[a] = true
+		}
+	case "note", "notes", "notesplain", "securenote":
+		for _, a := range []string{"note", "notes", "notesplain", "securenote"} {
+			aliases[a] = true
+		}
+	default:
+		aliases[w] = true
+	}
+	for name, value := range values {
+		if aliases[normalize(name)] {
+			return name, value, true
+		}
+	}
+	return "", "", false
+}
+
+func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	if input.SecretName == "" || input.Vault == "" || len(input.Fields) == 0 || input.Reason == "" {
+		return toolError("secret_name, vault, fields, and reason are required"), RequestSecretOutput{}, nil
+	}
+	if input.Operation != "create" && input.Operation != "update" {
+		return toolError("operation must be create or update"), RequestSecretOutput{}, nil
+	}
+	result, err := pc.Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
+	if err != nil {
+		return toolError("failed to write item: " + err.Error()), RequestSecretOutput{}, nil
+	}
 	return nil, *result, nil
 }
 
@@ -334,7 +487,7 @@ func handleExecWithSecret(ctx context.Context, dc FullDaemonClient, input ExecWi
 		return toolError(fmt.Sprintf("secret %q is not cached. Call request_secret first to approve and cache the secret.", input.SecretName)), ExecWithSecretOutput{}, nil
 	}
 
-	fieldValue, ok := fields[input.Field]
+	_, fieldValue, ok := resolveField(fields, input.Field)
 	if !ok {
 		availableFields := make([]string, 0, len(fields))
 		for k := range fields {

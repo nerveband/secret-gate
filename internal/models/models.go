@@ -23,6 +23,23 @@ type SecretRequest struct {
 	Fields     []string `json:"fields,omitempty"` // If empty, return all fields
 }
 
+// RequestContext describes the agent and task in terms an approver can scan.
+type RequestContext struct {
+	Agent   string `json:"agent,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Think   string `json:"think,omitempty"`
+	Project string `json:"project,omitempty"`
+	Task    string `json:"task,omitempty"`
+}
+
+// ItemMutation is an approved write to a 1Password item. Values remain only in
+// server memory while approval is pending and are never included in Telegram.
+type ItemMutation struct {
+	Operation string            `json:"operation"` // create or update
+	Category  string            `json:"category,omitempty"`
+	Fields    map[string]string `json:"fields"`
+}
+
 // ApprovalRequest represents a request to access a secret
 type ApprovalRequest struct {
 	ID               string          `json:"id"`
@@ -31,13 +48,16 @@ type ApprovalRequest struct {
 	Vault            string          `json:"vault"`
 	Secrets          []SecretRequest `json:"secrets,omitempty"` // Batch mode
 	RequesterMachine string          `json:"requester_machine"`
-	RequesterIP      string        `json:"requester_ip"`
-	Reason           string        `json:"reason,omitempty"`
-	Status           RequestStatus `json:"status"`
-	RequestedAt      time.Time     `json:"requested_at"`
-	ExpiresAt        time.Time     `json:"expires_at"`
-	RespondedAt      *time.Time    `json:"responded_at,omitempty"`
-	TelegramMsgID    int           `json:"telegram_msg_id,omitempty"`
+	RequesterIP      string          `json:"requester_ip"`
+	Reason           string          `json:"reason,omitempty"`
+	Action           string          `json:"action,omitempty"`
+	Context          RequestContext  `json:"context,omitempty"`
+	Mutation         *ItemMutation   `json:"mutation,omitempty"`
+	Status           RequestStatus   `json:"status"`
+	RequestedAt      time.Time       `json:"requested_at"`
+	ExpiresAt        time.Time       `json:"expires_at"`
+	RespondedAt      *time.Time      `json:"responded_at,omitempty"`
+	TelegramMsgID    int             `json:"telegram_msg_id,omitempty"`
 }
 
 // SecretValue holds the retrieved secret data

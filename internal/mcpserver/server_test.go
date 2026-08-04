@@ -101,11 +101,15 @@ func (m *mockProxyClient) GetFields(secretName, vault string) (*FieldsResult, er
 	return m.fieldsResult, nil
 }
 
-func (m *mockProxyClient) Request(_ context.Context, secretName, vault, reason string) (*RequestResult, error) {
+func (m *mockProxyClient) Request(_ context.Context, secretName, vault, reason string, _ []string, _ RequestContext) (*RequestResult, error) {
 	if m.requestErr != nil {
 		return nil, m.requestErr
 	}
 	return m.requestResult, nil
+}
+
+func (m *mockProxyClient) Write(_ context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error) {
+	return m.requestResult, m.requestErr
 }
 
 // --- daemon_status tests ---
@@ -124,6 +128,22 @@ func TestHandleDaemonStatus_NotRunning(t *testing.T) {
 	}
 	if output.EntryCount != 0 {
 		t.Errorf("expected entry_count=0, got %d", output.EntryCount)
+	}
+}
+
+func TestReadFieldsSupportsAliasesAndWholeItem(t *testing.T) {
+	dc := newMockDaemonClient(true)
+	dc.cache[dc.cacheKey("account", "vault")] = map[string]string{"notesPlain": "deployment context", "one-time password": "seed"}
+	result, output, err := handleReadFields(context.Background(), dc, ReadFieldsInput{SecretName: "account", Vault: "vault", Fields: []string{"secure-note"}})
+	if err != nil || result != nil {
+		t.Fatalf("read alias failed: result=%v err=%v", result, err)
+	}
+	if output.Fields["notesPlain"] != "deployment context" {
+		t.Fatalf("notes alias did not resolve: %#v", output.Fields)
+	}
+	_, output, err = handleReadFields(context.Background(), dc, ReadFieldsInput{SecretName: "account", Vault: "vault"})
+	if err != nil || len(output.Fields) != 2 {
+		t.Fatalf("whole item read = %#v, err=%v", output.Fields, err)
 	}
 }
 
