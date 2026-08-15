@@ -1,111 +1,46 @@
+// Package mcpserver is the thin MCP stdio adapter over internal/core.
+// It owns only tool registration and result mapping; all domain logic
+// lives in core.Service.
 package mcpserver
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/otp"
+	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/johnuopini/secret-gate/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Handler defaults.
-const (
-	defaultSearchLimit = 10
-	defaultSSHPort     = 22
-	defaultSSHTimeout  = 120 * time.Second
-	defaultSSHAgentTTL = 1 * time.Hour
-)
+// --- Aliases: the MCP face shares the core domain vocabulary ---
 
-// --- Interfaces ---
+type DaemonClient = core.DaemonClient
+type FullDaemonClient = core.FullDaemonClient
+type ProxyClient = core.ProxyClient
+type Config = core.Config
 
-// DaemonClient provides read-only daemon access.
-type DaemonClient interface {
-	IsRunning() bool
-	StatusInfo() (*DaemonStatusResult, error)
+type DaemonStatusResult = core.DaemonStatusResult
+type SearchResultItem = core.SearchResultItem
+type FieldInfo = core.FieldInfo
+type RequestContext = core.RequestContext
+type FieldsResult = core.FieldsResult
+type RequestResult = core.RequestResult
+type ExecResult = core.ExecResult
+
+// NewHTTPProxyClient forwards to core so existing callers keep working.
+func NewHTTPProxyClient(serverURL string, dc FullDaemonClient, cacheTTLSec int) ProxyClient {
+	return core.NewHTTPProxyClient(serverURL, dc, cacheTTLSec)
 }
 
-// FullDaemonClient provides full daemon access including cache operations.
-type FullDaemonClient interface {
-	DaemonClient
-	Get(secretName, vault string) (map[string]string, error)
-	Store(secretName, vault string, fields map[string]string, ttl int) error
-	EnsureRunning() error
+// NewRealDaemonClient forwards to core.
+func NewRealDaemonClient() FullDaemonClient { return core.NewRealDaemonClient() }
+
+// NewRealDaemonClientWithConfig forwards to core.
+func NewRealDaemonClientWithConfig(cacheTTLSec int) FullDaemonClient {
+	return core.NewRealDaemonClientWithConfig(cacheTTLSec)
 }
 
-// ProxyClient provides HTTP proxy access to the secret-gate server.
-type ProxyClient interface {
-	Search(query string, limit int) ([]SearchResultItem, error)
-	GetFields(secretName, vault string) (*FieldsResult, error)
-	Request(ctx context.Context, secretName, vault, reason string, fields []string, requestContext RequestContext) (*RequestResult, error)
-	Write(ctx context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error)
-}
-
-// --- Shared types ---
-
-// DaemonStatusResult holds daemon status information.
-type DaemonStatusResult struct {
-	Running    bool   `json:"running"`
-	Uptime     string `json:"uptime,omitempty"`
-	EntryCount int    `json:"entry_count"`
-	SocketPath string `json:"socket_path,omitempty"`
-	PID        int    `json:"pid,omitempty"`
-}
-
-// SearchResultItem is a single search result from the proxy.
-type SearchResultItem struct {
-	SecretName string  `json:"secret_name"`
-	VaultName  string  `json:"vault_name"`
-	Score      float64 `json:"score"`
-	MatchType  string  `json:"match_type"`
-}
-
-// FieldInfo holds field metadata (name and type, no values).
-type FieldInfo struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Type      string `json:"type"`
-	Purpose   string `json:"purpose,omitempty"`
-	Section   string `json:"section,omitempty"`
-	Reference string `json:"reference,omitempty"`
-}
-
-type RequestContext struct {
-	Agent   string `json:"agent,omitempty" jsonschema:"agent name, such as Codex"`
-	Model   string `json:"model,omitempty" jsonschema:"model name"`
-	Think   string `json:"think,omitempty" jsonschema:"thinking level"`
-	Project string `json:"project,omitempty" jsonschema:"project or repository name"`
-	Task    string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
-}
-
-// FieldsResult holds the result of inspecting fields.
-type FieldsResult struct {
-	SecretName string      `json:"secret_name"`
-	VaultName  string      `json:"vault_name"`
-	Fields     []FieldInfo `json:"fields"`
-}
-
-// RequestResult holds the result of a secret request.
-type RequestResult struct {
-	Status          string   `json:"status"`
-	SecretName      string   `json:"secret_name"`
-	Cached          bool     `json:"cached"`
-	FieldsAvailable []string `json:"fields_available,omitempty"`
-	Message         string   `json:"message,omitempty"`
-}
-
-// ExecResult holds the result of command execution.
-type ExecResult struct {
-	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-}
-
-// --- Tool Input types ---
+// --- Tool input/output types (unchanged wire schemas) ---
 
 type DaemonStatusInput struct{}
 
@@ -176,8 +111,6 @@ type SSHWithSecretInput struct {
 	Timeout    int    `json:"timeout,omitempty" jsonschema:"timeout in seconds (default 120)"`
 }
 
-// --- Tool Output types ---
-
 type DaemonStatusOutput = DaemonStatusResult
 
 type SearchSecretsOutput struct {
@@ -187,7 +120,6 @@ type SearchSecretsOutput struct {
 }
 
 type InspectFieldsOutput = FieldsResult
-
 type RequestSecretOutput = RequestResult
 
 type ExecWithSecretOutput struct {
@@ -204,25 +136,15 @@ type SSHWithSecretOutput struct {
 	SecretUsed string `json:"secret_used"`
 }
 
-// --- Config ---
-
-// Config holds configuration for the MCP server.
-type Config struct {
-	ServerURL   string
-	CacheTTLSec int
-	SSHAgent    bool
-}
-
 // --- Server construction ---
 
-// New creates a new MCP server with all 6 secret-gate tools registered.
+// New creates the MCP server with all secret-gate tools registered.
 func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "secret-gate",
-		Version: "0.3.2",
+		Version: version.Version,
 	}, nil)
 
-	// Register all tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "daemon_status",
 		Description: "Check the status of the secret-gate cache daemon. Returns whether it is running, uptime, cached entry count, and socket path.",
@@ -265,7 +187,7 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "exec_with_secret",
-		Description: "Execute a shell command with a secret field injected as an environment variable. The secret must be previously approved and cached (use request_secret first). The secret value is NEVER returned - it is only available to the subprocess via the environment variable.",
+		Description: "Execute a shell command with a secret field injected as an environment variable. The secret must be previously approved and cached (use request_secret first). The secret value is NEVER returned - it is only available to the subprocess via the environment variable, and exact occurrences are redacted from captured output.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ExecWithSecretInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {
 		return handleExecWithSecret(ctx, dc, input)
 	})
@@ -280,337 +202,14 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 	return server
 }
 
-// --- Handler functions ---
-
-func handleDaemonStatus(_ context.Context, dc DaemonClient) (*mcp.CallToolResult, DaemonStatusOutput, error) {
-	if !dc.IsRunning() {
-		return nil, DaemonStatusOutput{
-			Running:    false,
-			EntryCount: 0,
-		}, nil
-	}
-
-	status, err := dc.StatusInfo()
-	if err != nil {
-		return toolError("failed to get daemon status: " + err.Error()), DaemonStatusOutput{}, nil
-	}
-
-	return nil, *status, nil
+// svc builds a core.Service around the injected clients. Handlers keep
+// their pre-0.4.0 signatures so existing tests and callers are unchanged.
+func svc(dc FullDaemonClient, pc ProxyClient, cfg Config) *core.Service {
+	return &core.Service{Daemon: dc, Proxy: pc, Config: cfg, Now: time.Now}
 }
 
-func handleSearchSecrets(_ context.Context, pc ProxyClient, input SearchSecretsInput) (*mcp.CallToolResult, SearchSecretsOutput, error) {
-	if input.Query == "" {
-		return toolError("query is required"), SearchSecretsOutput{}, nil
-	}
-
-	limit := input.Limit
-	if limit <= 0 {
-		limit = defaultSearchLimit
-	}
-
-	results, err := pc.Search(input.Query, limit)
-	if err != nil {
-		return toolError("search failed: " + err.Error()), SearchSecretsOutput{}, nil
-	}
-
-	return nil, SearchSecretsOutput{
-		Results: results,
-		Query:   input.Query,
-		Count:   len(results),
-	}, nil
-}
-
-func handleInspectFields(_ context.Context, pc ProxyClient, input InspectFieldsInput) (*mcp.CallToolResult, InspectFieldsOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), InspectFieldsOutput{}, nil
-	}
-
-	result, err := pc.GetFields(input.SecretName, input.Vault)
-	if err != nil {
-		return toolError("failed to get fields: " + err.Error()), InspectFieldsOutput{}, nil
-	}
-
-	return nil, *result, nil
-}
-
-func handleRequestSecret(ctx context.Context, dc FullDaemonClient, pc ProxyClient, input RequestSecretInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), RequestSecretOutput{}, nil
-	}
-	if input.Reason == "" {
-		return toolError("reason is required — explain why you need this secret so the approver can make an informed decision"), RequestSecretOutput{}, nil
-	}
-
-	// Check if already cached in daemon
-	if dc.IsRunning() {
-		cached, err := dc.Get(input.SecretName, input.Vault)
-		requestedAvailable := err == nil && cached != nil
-		for _, field := range input.Fields {
-			if _, _, ok := resolveField(cached, field); !ok {
-				requestedAvailable = false
-				break
-			}
-		}
-		if requestedAvailable {
-			fieldNames := make([]string, 0, len(cached))
-			for k := range cached {
-				fieldNames = append(fieldNames, k)
-			}
-			return nil, RequestSecretOutput{
-				Status:          "approved",
-				SecretName:      input.SecretName,
-				Cached:          true,
-				FieldsAvailable: fieldNames,
-				Message:         "Secret is already cached and available. Use exec_with_secret or ssh_with_secret to use it.",
-			}, nil
-		}
-	}
-
-	// Submit request via proxy
-	result, err := pc.Request(ctx, input.SecretName, input.Vault, input.Reason, input.Fields, input.Context)
-	if err != nil {
-		return toolError("failed to request secret: " + err.Error()), RequestSecretOutput{}, nil
-	}
-
-	return nil, *result, nil
-}
-
-func handleReadFields(_ context.Context, dc FullDaemonClient, input ReadFieldsInput) (*mcp.CallToolResult, ReadFieldsOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), ReadFieldsOutput{}, nil
-	}
-	values, err := dc.Get(input.SecretName, input.Vault)
-	if err != nil {
-		return toolError("item is not approved and cached; call request_secret first"), ReadFieldsOutput{}, nil
-	}
-	out := make(map[string]string, len(input.Fields))
-	if len(input.Fields) == 0 {
-		for name, value := range values {
-			out[name] = value
-		}
-		return nil, ReadFieldsOutput{SecretName: input.SecretName, Fields: out}, nil
-	}
-	for _, name := range input.Fields {
-		actual, value, ok := resolveField(values, name)
-		if !ok {
-			return toolError(fmt.Sprintf("field %q is not available", name)), ReadFieldsOutput{}, nil
-		}
-		out[actual] = value
-	}
-	return nil, ReadFieldsOutput{SecretName: input.SecretName, Fields: out}, nil
-}
-
-func handleGetOTP(_ context.Context, dc FullDaemonClient, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), GetOTPOutput{}, nil
-	}
-	values, err := dc.Get(input.SecretName, input.Vault)
-	if err != nil {
-		return toolError("item is not approved and cached; call request_secret first"), GetOTPOutput{}, nil
-	}
-	wanted := input.Field
-	if wanted == "" {
-		wanted = "otp"
-	}
-	actual, seed, ok := resolveField(values, wanted)
-	if !ok {
-		return toolError("no OTP/MFA/TOTP/2FA field is available in this item"), GetOTPOutput{}, nil
-	}
-	code, expires, err := otp.Generate(seed, time.Now())
-	if err != nil {
-		return toolError("could not generate OTP: " + err.Error()), GetOTPOutput{}, nil
-	}
-	return nil, GetOTPOutput{Code: code, ExpiresAt: expires.UTC().Format(time.RFC3339), SecretUsed: input.SecretName + "/" + actual}, nil
-}
-
-func resolveField(values map[string]string, wanted string) (string, string, bool) {
-	normalize := func(s string) string {
-		return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(s)))
-	}
-	w := normalize(wanted)
-	aliases := map[string]bool{}
-	switch w {
-	case "otp", "totp", "mfa", "2fa", "onetimepassword":
-		for _, a := range []string{"otp", "totp", "mfa", "2fa", "onetimepassword"} {
-			aliases[a] = true
-		}
-	case "note", "notes", "notesplain", "securenote":
-		for _, a := range []string{"note", "notes", "notesplain", "securenote"} {
-			aliases[a] = true
-		}
-	default:
-		aliases[w] = true
-	}
-	for name, value := range values {
-		if aliases[normalize(name)] {
-			return name, value, true
-		}
-	}
-	return "", "", false
-}
-
-func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
-	if input.SecretName == "" || input.Vault == "" || len(input.Fields) == 0 || input.Reason == "" {
-		return toolError("secret_name, vault, fields, and reason are required"), RequestSecretOutput{}, nil
-	}
-	if input.Operation != "create" && input.Operation != "update" {
-		return toolError("operation must be create or update"), RequestSecretOutput{}, nil
-	}
-	result, err := pc.Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
-	if err != nil {
-		return toolError("failed to write item: " + err.Error()), RequestSecretOutput{}, nil
-	}
-	return nil, *result, nil
-}
-
-func handleExecWithSecret(ctx context.Context, dc FullDaemonClient, input ExecWithSecretInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), ExecWithSecretOutput{}, nil
-	}
-	if input.Field == "" {
-		return toolError("field is required"), ExecWithSecretOutput{}, nil
-	}
-	if input.EnvVar == "" {
-		return toolError("env_var is required"), ExecWithSecretOutput{}, nil
-	}
-	if input.Command == "" {
-		return toolError("command is required"), ExecWithSecretOutput{}, nil
-	}
-
-	// Look up secret from daemon cache
-	if !dc.IsRunning() {
-		return toolError("daemon is not running. Call request_secret first to approve and cache the secret."), ExecWithSecretOutput{}, nil
-	}
-
-	fields, err := dc.Get(input.SecretName, input.Vault)
-	if err != nil {
-		return toolError(fmt.Sprintf("secret %q is not cached. Call request_secret first to approve and cache the secret.", input.SecretName)), ExecWithSecretOutput{}, nil
-	}
-
-	_, fieldValue, ok := resolveField(fields, input.Field)
-	if !ok {
-		availableFields := make([]string, 0, len(fields))
-		for k := range fields {
-			availableFields = append(availableFields, k)
-		}
-		return toolError(fmt.Sprintf("field %q not found in secret %q. Available fields: %s", input.Field, input.SecretName, strings.Join(availableFields, ", "))), ExecWithSecretOutput{}, nil
-	}
-
-	timeout := time.Duration(input.TimeoutSec) * time.Second
-	if timeout <= 0 {
-		timeout = defaultExecTimeout
-	}
-
-	envVars := map[string]string{
-		input.EnvVar: fieldValue,
-	}
-
-	result, err := execCommand(ctx, input.Command, envVars, input.WorkingDir, timeout)
-	if err != nil {
-		return toolError("command execution failed: " + err.Error()), ExecWithSecretOutput{}, nil
-	}
-
-	return nil, ExecWithSecretOutput{
-		ExitCode:   result.ExitCode,
-		Stdout:     result.Stdout,
-		Stderr:     result.Stderr,
-		SecretUsed: input.SecretName + "/" + input.Field,
-	}, nil
-}
-
-func handleSSHWithSecret(ctx context.Context, dc FullDaemonClient, cfg Config, input SSHWithSecretInput) (*mcp.CallToolResult, SSHWithSecretOutput, error) {
-	if input.SecretName == "" {
-		return toolError("secret_name is required"), SSHWithSecretOutput{}, nil
-	}
-	if input.Host == "" {
-		return toolError("host is required"), SSHWithSecretOutput{}, nil
-	}
-
-	// Look up secret from daemon cache
-	if !dc.IsRunning() {
-		return toolError("daemon is not running. Call request_secret first to approve and cache the secret."), SSHWithSecretOutput{}, nil
-	}
-
-	fields, err := dc.Get(input.SecretName, input.Vault)
-	if err != nil {
-		return toolError(fmt.Sprintf("secret %q is not cached. Call request_secret first to approve and cache the secret.", input.SecretName)), SSHWithSecretOutput{}, nil
-	}
-
-	// Find SSH key field
-	fieldName, keyValue, found := daemon.FindSSHKeyField(fields)
-	if !found {
-		availableFields := make([]string, 0, len(fields))
-		for k := range fields {
-			availableFields = append(availableFields, k)
-		}
-		return toolError(fmt.Sprintf("no SSH private key found in secret %q. Available fields: %s", input.SecretName, strings.Join(availableFields, ", "))), SSHWithSecretOutput{}, nil
-	}
-
-	// Add key to ssh-agent
-	identityPath := ""
-	if cfg.SSHAgent {
-		ttl := time.Duration(cfg.CacheTTLSec) * time.Second
-		if ttl <= 0 {
-			ttl = defaultSSHAgentTTL
-		}
-		if err := daemon.AddToSSHAgent(keyValue, ttl); err != nil {
-			identityPath, err = daemon.CreateTempSSHKey(keyValue)
-			if err != nil {
-				return toolError(fmt.Sprintf("failed to prepare SSH key (%s) after ssh-agent error: %v", fieldName, err)), SSHWithSecretOutput{}, nil
-			}
-		}
-	} else {
-		var err error
-		identityPath, err = daemon.CreateTempSSHKey(keyValue)
-		if err != nil {
-			return toolError(fmt.Sprintf("failed to prepare SSH key (%s): %v", fieldName, err)), SSHWithSecretOutput{}, nil
-		}
-	}
-	if identityPath != "" {
-		defer os.Remove(identityPath)
-	}
-
-	// Build SSH command
-	port := input.Port
-	if port <= 0 {
-		port = defaultSSHPort
-	}
-	sshArgs := []string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-p", fmt.Sprintf("%d", port)}
-	if identityPath != "" {
-		sshArgs = append(sshArgs, "-o", "IdentitiesOnly=yes", "-i", identityPath)
-	}
-	sshArgs = append(sshArgs, input.Host)
-	if input.Command != "" {
-		sshArgs = append(sshArgs, input.Command)
-	}
-
-	timeout := time.Duration(input.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = defaultSSHTimeout
-	}
-
-	// Build the ssh command string
-	sshCmd := "ssh"
-	for _, arg := range sshArgs {
-		sshCmd += " " + shellQuote(arg)
-	}
-
-	result, err := execCommand(ctx, sshCmd, nil, "", timeout)
-	if err != nil {
-		return toolError("SSH execution failed: " + err.Error()), SSHWithSecretOutput{}, nil
-	}
-
-	return nil, SSHWithSecretOutput{
-		ExitCode:   result.ExitCode,
-		Stdout:     result.Stdout,
-		Stderr:     result.Stderr,
-		SecretUsed: input.SecretName + "/" + fieldName,
-	}, nil
-}
-
-// --- Helper functions ---
-
-// toolError creates a tool error result (not a protocol error).
+// toolError creates a tool error result (not a protocol error), carrying
+// the core hint when present.
 func toolError(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
@@ -618,91 +217,109 @@ func toolError(msg string) *mcp.CallToolResult {
 	}
 }
 
-// shellQuote quotes a string for use in a shell command.
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
+func coreError(err error) *mcp.CallToolResult {
+	msg := core.MessageOf(err)
+	if hint := core.HintOf(err); hint != "" {
+		msg += " (" + hint + ")"
 	}
-	// If the string doesn't contain special chars, return as-is
-	safe := true
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '@') {
-			safe = false
-			break
-		}
-	}
-	if safe {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+	return toolError(msg)
 }
 
-// --- realDaemonClient ---
+// --- Handlers (thin delegation) ---
 
-// realDaemonClient wraps daemon.Client to implement FullDaemonClient.
-type realDaemonClient struct {
-	mu          sync.Mutex
-	client      *daemon.Client
-	selfBin     string
-	cacheTTLSec int
-}
-
-// NewRealDaemonClient creates a FullDaemonClient backed by the real daemon.
-func NewRealDaemonClient() FullDaemonClient {
-	selfBin, _ := os.Executable()
-	return &realDaemonClient{
-		client:      daemon.NewClient(daemon.SocketPath()),
-		selfBin:     selfBin,
-		cacheTTLSec: 3600,
-	}
-}
-
-// NewRealDaemonClientWithConfig creates a FullDaemonClient with specified TTL.
-func NewRealDaemonClientWithConfig(cacheTTLSec int) FullDaemonClient {
-	selfBin, _ := os.Executable()
-	return &realDaemonClient{
-		client:      daemon.NewClient(daemon.SocketPath()),
-		selfBin:     selfBin,
-		cacheTTLSec: cacheTTLSec,
-	}
-}
-
-func (r *realDaemonClient) IsRunning() bool {
-	return r.client.IsRunning()
-}
-
-func (r *realDaemonClient) StatusInfo() (*DaemonStatusResult, error) {
-	status, err := r.client.Status()
+func handleDaemonStatus(_ context.Context, dc DaemonClient) (*mcp.CallToolResult, DaemonStatusOutput, error) {
+	s := &core.Service{Daemon: readOnly{dc}, Now: time.Now}
+	status, err := s.DaemonStatus()
 	if err != nil {
-		return nil, err
+		return coreError(err), DaemonStatusOutput{}, nil
 	}
-	return &DaemonStatusResult{
-		Running:    true,
-		Uptime:     status.Uptime,
-		EntryCount: status.EntryCount,
-		SocketPath: status.SocketPath,
-		PID:        status.PID,
-	}, nil
+	return nil, *status, nil
 }
 
-func (r *realDaemonClient) Get(secretName, vault string) (map[string]string, error) {
-	return r.client.Get(secretName, vault)
-}
+// readOnly adapts a DaemonClient to FullDaemonClient for status-only use.
+type readOnly struct{ DaemonClient }
 
-func (r *realDaemonClient) Store(secretName, vault string, fields map[string]string, ttl int) error {
-	return r.client.Store(secretName, vault, fields, ttl)
+func (readOnly) Get(string, string) (map[string]string, error) {
+	return nil, core.E(core.ErrNotFound, "read access not available", "")
 }
+func (readOnly) Store(string, string, map[string]string, int) error { return nil }
+func (readOnly) EnsureRunning() error                               { return nil }
 
-func (r *realDaemonClient) EnsureRunning() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.client.IsRunning() {
-		return nil
-	}
-	client, err := daemon.EnsureDaemon(r.selfBin, r.cacheTTLSec)
+func handleSearchSecrets(_ context.Context, pc ProxyClient, input SearchSecretsInput) (*mcp.CallToolResult, SearchSecretsOutput, error) {
+	out, err := svc(nil, pc, Config{}).Search(input.Query, input.Limit)
 	if err != nil {
-		return err
+		return coreError(err), SearchSecretsOutput{}, nil
 	}
-	r.client = client
-	return nil
+	return nil, SearchSecretsOutput{Results: out.Results, Query: out.Query, Count: out.Count}, nil
+}
+
+func handleInspectFields(_ context.Context, pc ProxyClient, input InspectFieldsInput) (*mcp.CallToolResult, InspectFieldsOutput, error) {
+	out, err := svc(nil, pc, Config{}).InspectFields(input.SecretName, input.Vault)
+	if err != nil {
+		return coreError(err), InspectFieldsOutput{}, nil
+	}
+	return nil, *out, nil
+}
+
+func handleRequestSecret(ctx context.Context, dc FullDaemonClient, pc ProxyClient, input RequestSecretInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	out, err := svc(dc, pc, Config{}).Request(ctx, input.SecretName, input.Vault, input.Reason, input.Fields, input.Context)
+	if err != nil {
+		return coreError(err), RequestSecretOutput{}, nil
+	}
+	return nil, *out, nil
+}
+
+func handleReadFields(_ context.Context, dc FullDaemonClient, input ReadFieldsInput) (*mcp.CallToolResult, ReadFieldsOutput, error) {
+	out, err := svc(dc, nil, Config{}).ReadFields(input.SecretName, input.Vault, input.Fields)
+	if err != nil {
+		return coreError(err), ReadFieldsOutput{}, nil
+	}
+	return nil, ReadFieldsOutput{SecretName: input.SecretName, Fields: out}, nil
+}
+
+func handleGetOTP(_ context.Context, dc FullDaemonClient, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
+	out, err := svc(dc, nil, Config{}).GetOTP(input.SecretName, input.Vault, input.Field)
+	if err != nil {
+		return coreError(err), GetOTPOutput{}, nil
+	}
+	return nil, GetOTPOutput{Code: out.Code, ExpiresAt: out.ExpiresAt, SecretUsed: out.SecretUsed}, nil
+}
+
+func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	out, err := svc(nil, pc, Config{}).Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
+	if err != nil {
+		return coreError(err), RequestSecretOutput{}, nil
+	}
+	return nil, *out, nil
+}
+
+func handleExecWithSecret(ctx context.Context, dc FullDaemonClient, input ExecWithSecretInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {
+	out, err := svc(dc, nil, Config{}).Exec(ctx, core.ExecRequest{
+		SecretName:   input.SecretName,
+		Vault:        input.Vault,
+		Field:        input.Field,
+		EnvVar:       input.EnvVar,
+		ShellCommand: input.Command, // MCP tool contract keeps sh -c semantics
+		WorkingDir:   input.WorkingDir,
+		Timeout:      time.Duration(input.TimeoutSec) * time.Second,
+	})
+	if err != nil {
+		return coreError(err), ExecWithSecretOutput{}, nil
+	}
+	return nil, ExecWithSecretOutput{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, SecretUsed: out.SecretUsed}, nil
+}
+
+func handleSSHWithSecret(ctx context.Context, dc FullDaemonClient, cfg Config, input SSHWithSecretInput) (*mcp.CallToolResult, SSHWithSecretOutput, error) {
+	out, err := svc(dc, nil, cfg).SSH(ctx, core.SSHRequest{
+		SecretName: input.SecretName,
+		Vault:      input.Vault,
+		Host:       input.Host,
+		Command:    input.Command,
+		Port:       input.Port,
+		Timeout:    time.Duration(input.Timeout) * time.Second,
+	})
+	if err != nil {
+		return coreError(err), SSHWithSecretOutput{}, nil
+	}
+	return nil, SSHWithSecretOutput{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, SecretUsed: out.SecretUsed}, nil
 }

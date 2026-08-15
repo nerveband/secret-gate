@@ -23,6 +23,22 @@ The local daemon uses `$XDG_RUNTIME_DIR/secret-gate.{sock,pid}` when that variab
 
 Linux and macOS are the supported client platforms. Darwin artifacts built on DevBox are cross-builds; native macOS behavior is verified only by the macOS CI job. Windows is unsupported because the daemon and command executor require Unix sockets and POSIX process behavior.
 
+## CLI contract (0.4.0+)
+
+- The client is noun-verb: `secret-gate item search|fields|read`, `exec`, `ssh`,
+  `otp show|exec`, `write create|update`, `request submit|status|wait|cancel`,
+  `daemon status|start|flush|stop`, `agent-context`, `schema`, `version`, `mcp`.
+- One JSON envelope per invocation on stdout; errors are JSON on stderr.
+  Exit codes are frozen — see docs/exit-codes.md.
+- Guardrails for agents working on or with this CLI:
+  - Always prefer `exec`/`ssh`/`otp exec` over `item read --reveal`.
+  - Always run `daemon flush` without `--commit` first (it is a dry run).
+  - Use `request submit --no-wait` + `request wait <token>` for long approvals.
+  - Never add flags outside the canonical vocabulary; `TestManifestVocabulary`
+    in internal/cli enforces the banned list mechanically.
+  - `skills/secret-gate/SKILL.md` examples are validated against the live
+    manifest by `TestSkillCommandsExistInManifest` — update both together.
+
 ## Local Docker stack
 
 - Docker is a system service on DevBox. Use `sudo docker` and `sudo docker compose` for daemon operations.

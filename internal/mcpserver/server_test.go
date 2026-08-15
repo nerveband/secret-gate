@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/johnuopini/secret-gate/internal/core"
 )
 
 // --- Mock implementations ---
@@ -576,8 +578,8 @@ func TestHandleExecWithSecret_Success(t *testing.T) {
 	if output.ExitCode != 0 {
 		t.Errorf("expected exit code 0, got %d. stderr: %s", output.ExitCode, output.Stderr)
 	}
-	if strings.TrimSpace(output.Stdout) != "s3cret" {
-		t.Errorf("expected stdout='s3cret', got %q", strings.TrimSpace(output.Stdout))
+	if strings.TrimSpace(output.Stdout) != "[REDACTED:my-secret/password]" {
+		t.Errorf("expected stdout='[REDACTED:my-secret/password]', got %q", strings.TrimSpace(output.Stdout))
 	}
 	if output.SecretUsed != "my-secret/password" {
 		t.Errorf("expected secret_used='my-secret/password', got %q", output.SecretUsed)
@@ -810,114 +812,14 @@ func TestHandleSSHWithSecret_FallsBackToIdentityFile(t *testing.T) {
 	}
 }
 
-// --- executor tests ---
-
-func TestExecCommand_SimpleEcho(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on windows")
-	}
-
-	result, err := execCommand(context.Background(), "echo hello", nil, "", 5*1000000000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("expected exit code 0, got %d", result.ExitCode)
-	}
-	if strings.TrimSpace(result.Stdout) != "hello" {
-		t.Errorf("expected stdout='hello', got %q", strings.TrimSpace(result.Stdout))
+func TestMCPTypesAreCoreAliases(t *testing.T) {
+	var _ core.ProxyClient = ProxyClient(nil)
+	var _ core.FullDaemonClient = FullDaemonClient(nil)
+	var rc RequestContext = core.RequestContext{Agent: "Codex"}
+	if rc.Agent != "Codex" {
+		t.Fatal("RequestContext is not aliased to core.RequestContext")
 	}
 }
-
-func TestExecCommand_EnvVarInjection(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on windows")
-	}
-
-	envVars := map[string]string{
-		"TEST_SECRET": "my_value",
-	}
-	result, err := execCommand(context.Background(), "echo $TEST_SECRET", envVars, "", 5*1000000000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.TrimSpace(result.Stdout) != "my_value" {
-		t.Errorf("expected stdout='my_value', got %q", strings.TrimSpace(result.Stdout))
-	}
-}
-
-func TestExecCommand_NonZeroExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on windows")
-	}
-
-	result, err := execCommand(context.Background(), "exit 7", nil, "", 5*1000000000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.ExitCode != 7 {
-		t.Errorf("expected exit code 7, got %d", result.ExitCode)
-	}
-}
-
-func TestExecCommand_Stderr(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on windows")
-	}
-
-	result, err := execCommand(context.Background(), "echo error_msg >&2", nil, "", 5*1000000000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result.Stderr, "error_msg") {
-		t.Errorf("expected stderr to contain 'error_msg', got %q", result.Stderr)
-	}
-}
-
-func TestExecCommand_MultipleEnvVars(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on windows")
-	}
-
-	envVars := map[string]string{
-		"VAR_A": "alpha",
-		"VAR_B": "beta",
-	}
-	result, err := execCommand(context.Background(), "echo ${VAR_A}_${VAR_B}", envVars, "", 5*1000000000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.TrimSpace(result.Stdout) != "alpha_beta" {
-		t.Errorf("expected 'alpha_beta', got %q", strings.TrimSpace(result.Stdout))
-	}
-}
-
-// --- shellQuote tests ---
-
-func TestShellQuote(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"", "''"},
-		{"simple", "simple"},
-		{"with space", "'with space'"},
-		{"it's", "'it'\\''s'"},
-		{"host.example.com", "host.example.com"},
-		{"user@host", "user@host"},
-		{"-o StrictHostKeyChecking=no", "'-o StrictHostKeyChecking=no'"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := shellQuote(tt.input)
-			if got != tt.expected {
-				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
 // --- Server construction test ---
 
 func TestNew_CreatesServer(t *testing.T) {

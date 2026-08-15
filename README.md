@@ -130,18 +130,37 @@ Then run the `server` binary with the required environment variables set.
 | `CLEANUP_INTERVAL` | No | `5m` | Interval for cleaning up expired requests |
 | `AUTO_APPROVE_TTL` | No | `30m` | Duration for Telegram "Approve window" sessions |
 
-## Client Installation
+## Client Usage
 
-The CLI is a complete approval-request fallback and does not require MCP. It can search items, inspect field metadata, submit a Telegram request, wait for approval, and retrieve the approved response. MCP is recommended when an agent needs process-only injection, SSH-agent integration, current OTP generation, structured request context, or approval-gated writes.
+The CLI is noun-verb, emitting one JSON envelope on stdout and structured errors on stderr. See [`docs/exit-codes.md`](docs/exit-codes.md) for the frozen exit codes (0–6).
 
 ```bash
-secret-gate --server https://your-server --search "release account" --format json
-secret-gate --server https://your-server --secret "release-account" --vault "Agents" --fields --format json
-secret-gate --server https://your-server --secret "release-account" --vault "Agents" --field password --reason "publish the release"
+# 1. Find the item (metadata only)
+secret-gate item search --query "deploy"
+
+# 2. Inspect its fields (labels and types, no values)
+secret-gate item fields --item "deploy-key"
+
+# 3. Request approval (blocks up to --timeout; Telegram approver decides)
+secret-gate request submit --item "deploy-key" --reason "deploy the api service" --fields "private key"
+
+# 3b. Async variant: take a token now, resume later
+secret-gate request submit --item "deploy-key" --reason "deploy the api service" --no-wait
+secret-gate request status tok123
+secret-gate request wait tok123 --timeout 10m
+secret-gate request cancel tok123
+
+# 4. Use the narrowest tool (value never enters model context)
+secret-gate exec --item "prod-api" --field credential --env API_KEY -- curl -s https://api.example.com/v1/me
+secret-gate ssh --item "deploy-key" --host deploy@web1.example.com --command "uptime"
+secret-gate otp exec --item "github" --env OTP_CODE -- gh auth login --with-token
+
+# 5. Only when you must read the value yourself
+secret-gate item read --item "wifi-guest" --fields "note" --reveal
+secret-gate otp show --item "github" --reveal
 ```
 
 The client binary (`secret-gate`) runs on the machine where your AI coding agent operates. It handles communication with the server and manages a local caching daemon.
-
 ### From the server
 
 The server hosts pre-compiled client binaries for Linux and macOS at `/client/{os}/{arch}`:

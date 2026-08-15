@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0 — Agent-native CLI ("One Binary, Three Faces")
+
+### Breaking
+- Removed the legacy flag invocation (`--secret`, `--search`, `--server`, ...).
+  It printed secret values to stdout with no confirmation. Flag-style calls now
+  exit 2 with a structured migration hint.
+- `daemon flush` is a dry run by default; pass `--commit` to flush.
+
+### Added
+- Noun-verb CLI: `item search|fields|read`, `exec`, `ssh`, `otp show|exec`,
+  `write create|update`, `request submit|status|wait|cancel`,
+  `daemon status|start|flush|stop`, `agent-context`, `schema`, `version`.
+- JSON envelope on stdout (`schema_version`, `ok`, `command`, `data`, `meta`);
+  structured errors on stderr; frozen exit codes 0–6 (docs/exit-codes.md).
+- Visibility classes: metadata-only / process-only / model-visible (`--reveal`)
+  / value-input (`--stdin`).
+- Exact-match output redaction (`[REDACTED:item/field]`) on all child output.
+- Direct argv execution (no `sh -c`) with opt-in `--shell`.
+- Async recovery: `request submit --no-wait` + local ledger + `request wait`.
+- `internal/core`: single domain layer shared by CLI and MCP; `secret-gate mcp`
+  is now a thin adapter.
+- `scripts/audit.sh`: executable agent-CLI audit subset.
+
+### Unchanged
+- MCP tool names, schemas, and behavior (exec_with_secret keeps documented
+  `sh -c` semantics, now with output redaction).
+- `secret-gate daemon run` internals, server HTTP API, Telegram flow.
+
 ## v0.3.2 — 2026-08-04
 
 ### Fixed
