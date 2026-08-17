@@ -33,8 +33,28 @@ func sendRequest(t *testing.T, conn net.Conn, req Request) Response {
 	return resp
 }
 
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+
+	file, err := os.CreateTemp("", "sg-*.sock")
+	if err != nil {
+		t.Fatalf("create temporary socket path: %v", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatalf("close temporary socket file: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove temporary socket file: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(path)
+	})
+	return path
+}
+
 func TestServerStoreAndGet(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -76,7 +96,7 @@ func TestServerStoreAndGet(t *testing.T) {
 }
 
 func TestServerCacheMiss(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -98,7 +118,7 @@ func TestServerCacheMiss(t *testing.T) {
 }
 
 func TestServerStatus(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -122,7 +142,7 @@ func TestServerStatus(t *testing.T) {
 }
 
 func TestServerFlush(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -158,7 +178,7 @@ func TestServerFlush(t *testing.T) {
 }
 
 func TestServerStopDuringStartup(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, time.Hour)
 
 	done := make(chan error, 1)
@@ -196,7 +216,7 @@ func TestServerWatchAndAutoCache(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()
@@ -252,7 +272,7 @@ func TestServerWatchActivationCommand(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()
@@ -285,7 +305,7 @@ func TestServerWatchActivationCommand(t *testing.T) {
 }
 
 func TestServerUnwatch(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 	go srv.Run()
 	defer srv.Stop()

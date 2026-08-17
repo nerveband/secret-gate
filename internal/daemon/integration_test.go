@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -142,25 +141,6 @@ func TestIntegrationConcurrentAccess(t *testing.T) {
 	}
 }
 
-func shortSocketPath(t *testing.T) string {
-	t.Helper()
-
-	file, err := os.CreateTemp("", "secret-gate-*.sock")
-	if err != nil {
-		t.Fatalf("create temporary socket path: %v", err)
-	}
-	path := file.Name()
-	if err := file.Close(); err != nil {
-		t.Fatalf("close temporary socket file: %v", err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove temporary socket file: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Remove(path)
-	})
-	return path
-}
 
 func TestMockProxyFlow(t *testing.T) {
 	approved := false

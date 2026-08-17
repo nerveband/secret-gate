@@ -1,13 +1,12 @@
 package daemon
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestClientGetFromDaemon(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -32,7 +31,7 @@ func TestClientGetFromDaemon(t *testing.T) {
 }
 
 func TestClientCacheMiss(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -49,7 +48,7 @@ func TestClientCacheMiss(t *testing.T) {
 }
 
 func TestClientStatus(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
@@ -69,7 +68,7 @@ func TestClientStatus(t *testing.T) {
 }
 
 func TestClientIsRunning(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 
 	client := NewClient(sockPath)
 	if client.IsRunning() {
@@ -88,7 +87,7 @@ func TestClientIsRunning(t *testing.T) {
 }
 
 func TestClientFlush(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := shortSocketPath(t)
 	srv := NewServer(sockPath, 1*time.Hour)
 
 	go srv.Run()
