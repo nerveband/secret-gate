@@ -95,3 +95,113 @@ func TestOpenAPISpecDescribesMutationsAndFieldSelectors(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleStatusImmediate(t *testing.T) {
+	requests := store.New()
+	req, err := models.NewApprovalRequest("MySecret", "Personal", "devbox", "127.0.0.1", "read", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Save(req); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{WebhookBaseURL: "http://127.0.0.1:8080"}
+	h := New(requests, nil, nil, cfg, autosession.NewStore())
+
+	httpReq := httptest.NewRequest(http.MethodGet, "/status/"+req.Token, nil)
+	recorder := httptest.NewRecorder()
+	h.HandleStatus(recorder, httpReq)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp StatusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "pending" {
+		t.Fatalf("expected pending, got %s", resp.Status)
+	}
+}
+
+func TestHandleStatusLongPollApproval(t *testing.T) {
+	requests := store.New()
+	req, err := models.NewApprovalRequest("MySecret", "Personal", "devbox", "127.0.0.1", "read", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Save(req); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{WebhookBaseURL: "http://127.0.0.1:8080", LongPollMaxWait: 5 * time.Second}
+	h := New(requests, nil, nil, cfg, autosession.NewStore())
+
+	// Start long-poll in background
+	done := make(chan struct{})
+	var recorder *httptest.ResponseRecorder
+	go func() {
+		defer close(done)
+		httpReq := httptest.NewRequest(http.MethodGet, "/status/"+req.Token+"?wait=4", nil)
+		recorder = httptest.NewRecorder()
+		h.HandleStatus(recorder, httpReq)
+	}()
+
+	// Simulate approval after 50ms
+	time.Sleep(50 * time.Millisecond)
+	req.Approve()
+	if err := requests.Update(req); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var resp StatusResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != "approved" {
+			t.Fatalf("expected approved, got %s", resp.Status)
+		}
+		if resp.SecretURL == "" {
+			t.Fatal("expected non-empty SecretURL on approval")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for long-poll response on approval")
+	}
+}
+
+func TestHandleStatusLongPollTimeout(t *testing.T) {
+	requests := store.New()
+	req, err := models.NewApprovalRequest("MySecret", "Personal", "devbox", "127.0.0.1", "read", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Save(req); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{WebhookBaseURL: "http://127.0.0.1:8080", LongPollMaxWait: 5 * time.Second}
+	h := New(requests, nil, nil, cfg, autosession.NewStore())
+
+	start := time.Now()
+	httpReq := httptest.NewRequest(http.MethodGet, "/status/"+req.Token+"?wait=1", nil)
+	recorder := httptest.NewRecorder()
+	h.HandleStatus(recorder, httpReq)
+
+	elapsed := time.Since(start)
+	if elapsed < 900*time.Millisecond || elapsed > 2500*time.Millisecond {
+		t.Fatalf("expected elapsed ~1s, got %v", elapsed)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp StatusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "pending" {
+		t.Fatalf("expected pending on timeout, got %s", resp.Status)
+	}
+}

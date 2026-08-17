@@ -48,7 +48,8 @@ func (f *fakeDaemon) List() ([]daemon.CacheEntryInfo, error) {
 }
 func (f *fakeDaemon) Flush() error      { f.flushed = true; f.data = map[string]map[string]string{}; return nil }
 func (f *fakeDaemon) StopDaemon() error { f.stopped = true; f.running = false; return nil }
-
+func (f *fakeDaemon) Watch(daemon.WatchSpec) error  { return nil }
+func (f *fakeDaemon) Unwatch(string) error         { return nil }
 // --- fake proxy (implements core.ProxyClient + core.AsyncProxyClient) ---
 
 type fakeProxy struct {
@@ -99,6 +100,9 @@ func (p *fakeProxy) Status(ctx context.Context, statusURL string) (*core.StatusR
 	}
 	return &st, nil
 }
+func (p *fakeProxy) StatusWait(ctx context.Context, statusURL string, waitSec int) (*core.StatusResult, error) {
+	return p.Status(ctx, statusURL)
+}
 func (p *fakeProxy) Retrieve(ctx context.Context, secretURL, name, vault string) (*core.RequestResult, error) {
 	if p.retrieved != nil {
 		return p.retrieved, nil
@@ -124,7 +128,7 @@ func newTestApp(t *testing.T) *testApp {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	return &testApp{
 		app: &App{
-			Version: "0.4.0", ServerURL: "http://gate",
+			Version: "0.4.1", ServerURL: "http://gate",
 			Service: svc, Async: fp, Admin: fd,
 			StateDir: t.TempDir(),
 			Stdout: stdout, Stderr: stderr, Stdin: &bytes.Buffer{},

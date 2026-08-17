@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -145,8 +146,14 @@ func main() {
 		}
 	}()
 
-	log.Info("Starting secret-gate", logger.F("port", cfg.Port, "auto_approve_ttl", cfg.AutoApproveTTL.String()))
-	if err := http.ListenAndServe(":"+cfg.Port, mux); err != nil {
+	log.Info("Starting secret-gate", logger.F("port", cfg.Port, "auto_approve_ttl", cfg.AutoApproveTTL.String(), "long_poll_max_wait", cfg.LongPollMaxWait.String()))
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      0, // Disabled so long-polling handlers are not aborted by WriteTimeout
+	}
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("Failed to start server", logger.F("error", err.Error()))
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/johnuopini/secret-gate/internal/autosession"
 	"github.com/johnuopini/secret-gate/internal/config"
@@ -306,6 +308,44 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	if baseURL == "" {
 		h.writeError(w, http.StatusInternalServerError, "config_error", "WEBHOOK_BASE_URL not configured")
 		return
+	}
+
+	waitParam := r.URL.Query().Get("wait")
+	if waitParam != "" && req.Status == models.StatusPending && !req.IsExpired() {
+		if waitSec, err := strconv.Atoi(waitParam); err == nil && waitSec > 0 {
+			maxWait := h.config.LongPollMaxWait
+			if maxWait <= 0 {
+				maxWait = 25 * time.Second
+			}
+			waitDuration := time.Duration(waitSec) * time.Second
+			if waitDuration > maxWait {
+				waitDuration = maxWait
+			}
+
+			watchCh, cancel := h.store.Watch(token)
+			if watchCh != nil {
+				defer cancel()
+				timer := time.NewTimer(waitDuration)
+				defer timer.Stop()
+
+				select {
+				case <-r.Context().Done():
+					return
+				case status, ok := <-watchCh:
+					if ok {
+						if updatedReq, err := h.store.GetByToken(token); err == nil {
+							req = updatedReq
+						} else {
+							req.Status = status
+						}
+					}
+				case <-timer.C:
+					if updatedReq, err := h.store.GetByToken(token); err == nil {
+						req = updatedReq
+					}
+				}
+			}
+		}
 	}
 
 	var resp StatusResponse
@@ -891,6 +931,13 @@ func OpenAPISpec() string {
             "in": "path",
             "required": true,
             "schema": {"type": "string"}
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "description": "Optional long-polling wait duration in seconds (clamped to server maximum, default 25s)",
+            "schema": {"type": "integer"}
           }
         ],
         "responses": {

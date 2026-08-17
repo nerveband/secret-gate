@@ -25,11 +25,12 @@ type SecretRequest struct {
 
 // RequestContext describes the agent and task in terms an approver can scan.
 type RequestContext struct {
-	Agent   string `json:"agent,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Think   string `json:"think,omitempty"`
-	Project string `json:"project,omitempty"`
-	Task    string `json:"task,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Think        string `json:"think,omitempty"`
+	Project      string `json:"project,omitempty"`
+	Task         string `json:"task,omitempty"`
+	PaseoAgentID string `json:"paseo_agent_id,omitempty"`
 }
 
 // ItemMutation is an approved write to a 1Password item. Values remain only in

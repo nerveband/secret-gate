@@ -55,11 +55,23 @@ func (r *RealDaemonClient) Get(secretName, vault string) (map[string]string, err
 func (r *RealDaemonClient) Store(secretName, vault string, fields map[string]string, ttl int) error {
 	return r.client.Store(secretName, vault, fields, ttl)
 }
+func (r *RealDaemonClient) Watch(spec daemon.WatchSpec) error {
+	if err := r.EnsureRunning(); err != nil {
+		return err
+	}
+	return r.client.Watch(spec)
+}
+
+func (r *RealDaemonClient) Unwatch(token string) error {
+	if !r.client.IsRunning() {
+		return nil
+	}
+	return r.client.Unwatch(token)
+}
 
 func (r *RealDaemonClient) List() ([]daemon.CacheEntryInfo, error) { return r.client.List() }
 func (r *RealDaemonClient) Flush() error                           { return r.client.Flush() }
 func (r *RealDaemonClient) StopDaemon() error                      { return r.client.StopDaemon() }
-
 func (r *RealDaemonClient) EnsureRunning() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

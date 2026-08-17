@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/johnuopini/secret-gate/internal/daemon"
 )
-
 // --- Mock implementations ---
 
 type mockDaemonClient struct {
@@ -79,6 +79,9 @@ func (m *mockDaemonClient) EnsureRunning() error {
 	m.running = true
 	return nil
 }
+
+func (m *mockDaemonClient) Watch(daemon.WatchSpec) error { return nil }
+func (m *mockDaemonClient) Unwatch(string) error         { return nil }
 
 type mockProxyClient struct {
 	searchResults []SearchResultItem

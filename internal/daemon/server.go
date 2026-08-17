@@ -15,6 +15,7 @@ type Server struct {
 	cache      *Cache
 	cacheTTL   time.Duration
 	startedAt  time.Time
+	watcher    *Watcher
 	listenerMu sync.Mutex
 	listener   net.Listener
 	stopCh     chan struct{}
@@ -23,11 +24,13 @@ type Server struct {
 }
 
 func NewServer(socketPath string, cacheTTL time.Duration) *Server {
+	c := NewCache()
 	return &Server{
 		socketPath: socketPath,
-		cache:      NewCache(),
+		cache:      c,
 		cacheTTL:   cacheTTL,
 		startedAt:  time.Now(),
+		watcher:    NewWatcher(c, cacheTTL),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -77,6 +80,9 @@ func (s *Server) Run() error {
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
+		if s.watcher != nil {
+			s.watcher.Stop()
+		}
 		s.listenerMu.Lock()
 		if s.listener != nil {
 			s.listener.Close()
@@ -121,6 +127,10 @@ func (s *Server) handleRequest(req Request) Response {
 		return s.handleFlush()
 	case CmdStatus:
 		return s.handleStatus()
+	case CmdWatch:
+		return s.handleWatch(req)
+	case CmdUnwatch:
+		return s.handleUnwatch(req)
 	case CmdStop:
 		go func() {
 			time.Sleep(100 * time.Millisecond)
@@ -131,7 +141,6 @@ func (s *Server) handleRequest(req Request) Response {
 		return Response{Error: fmt.Sprintf("unknown command: %s", req.Command)}
 	}
 }
-
 func (s *Server) handleGet(req Request) Response {
 	entry, ok := s.cache.Get(req.SecretName, req.Vault)
 	if !ok {
@@ -150,7 +159,11 @@ func (s *Server) handleStore(req Request) Response {
 }
 
 func (s *Server) handleList() Response {
-	return Response{OK: true, Entries: s.cache.List()}
+	return Response{
+		OK:      true,
+		Entries: s.cache.List(),
+		Watches: s.watcher.List(),
+	}
 }
 
 func (s *Server) handleFlush() Response {
@@ -164,10 +177,34 @@ func (s *Server) handleStatus() Response {
 		Status: &DaemonStatus{
 			Uptime:     time.Since(s.startedAt).Truncate(time.Second).String(),
 			EntryCount: s.cache.Count(),
+			WatchCount: s.watcher.Count(),
 			SocketPath: s.socketPath,
 			PID:        os.Getpid(),
 		},
 	}
+}
+
+func (s *Server) handleWatch(req Request) Response {
+	if req.Watch == nil || req.Watch.Token == "" || req.Watch.StatusURL == "" {
+		return Response{OK: false, Error: "invalid watch specification: token and status_url required"}
+	}
+	if req.Watch.CacheTTLSec <= 0 {
+		req.Watch.CacheTTLSec = int(s.cacheTTL.Seconds())
+	}
+	newlyRegistered := s.watcher.Register(*req.Watch)
+	state := "registered"
+	if !newlyRegistered {
+		state = "duplicate"
+	}
+	return Response{OK: true, WatchState: state}
+}
+
+func (s *Server) handleUnwatch(req Request) Response {
+	if req.Token == "" {
+		return Response{OK: false, Error: "token is required for unwatch"}
+	}
+	s.watcher.Unwatch(req.Token)
+	return Response{OK: true}
 }
 
 func (s *Server) writeResponse(conn net.Conn, resp Response) {

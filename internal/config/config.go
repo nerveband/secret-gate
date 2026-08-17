@@ -25,6 +25,9 @@ type Config struct {
 	CleanupInterval time.Duration
 	AutoApproveTTL  time.Duration
 
+	// Long-polling settings
+	LongPollMaxWait time.Duration
+
 	// Webhook settings
 	WebhookBaseURL string
 }
@@ -40,6 +43,7 @@ func Load() (*Config, error) {
 		RequestTTL:       getDurationDefault("REQUEST_TTL", 15*time.Minute),
 		CleanupInterval:  getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
 		AutoApproveTTL:   getDurationDefault("AUTO_APPROVE_TTL", 30*time.Minute),
+		LongPollMaxWait:  getDurationDefault("LONG_POLL_MAX_WAIT", 25*time.Second),
 	}
 
 	// Parse Telegram chat ID

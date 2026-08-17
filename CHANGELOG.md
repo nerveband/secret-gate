@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — Instant Push, Hybrid Wait, and Agent Activation
+
+### Added
+- Long-polling push notification (`GET /status/{token}?wait=25`) for instant (<1ms) approval delivery.
+- In-memory watch hub in the server store to publish status updates immediately on approval/denial/expiry.
+- Hybrid wait & safe yield in core proxy and MCP tools: returns a clean `pending` result with resume command after the sync wait window (default 40s in MCP) instead of timing out.
+- Daemon background watcher (`watch` and `unwatch` verbs) to maintain background long-polling and auto-cache approved secrets.
+- Agent activation bridge: automatically wakes Paseo agents (`paseo send <agent-id> "..."`) or runs configured activation commands when approval is granted on Telegram.
+- Environment detection for `PASEO_AGENT_ID` and `SECRET_GATE_ACTIVATE`.
+
 ## 0.4.0 — Agent-native CLI ("One Binary, Three Faces")
 
 ### Breaking

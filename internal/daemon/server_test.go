@@ -3,7 +3,11 @@ package daemon
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -168,5 +172,141 @@ func TestServerStopDuringStartup(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Run() did not exit after immediate Stop()")
+	}
+}
+
+func TestServerWatchAndAutoCache(t *testing.T) {
+	var approved atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status/tok-w1", func(w http.ResponseWriter, r *http.Request) {
+		if !approved.Load() {
+			json.NewEncoder(w).Encode(map[string]string{"status": "pending"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":     "approved",
+			"secret_url": "http://" + r.Host + "/secret/tok-w1",
+		})
+	})
+	mux.HandleFunc("/secret/tok-w1", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"secret": map[string]string{"api_key": "secret-val-999"},
+		})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, 1*time.Hour)
+	go srv.Run()
+	defer srv.Stop()
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewClient(sockPath)
+	err := client.Watch(WatchSpec{
+		Token:       "tok-w1",
+		StatusURL:   mockServer.URL + "/status/tok-w1",
+		SecretName:  "watched-api",
+		Vault:       "Production",
+		CacheTTLSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("Watch failed: %v", err)
+	}
+
+	// Verify it shows up in status/list
+	status, err := client.Status()
+	if err != nil || status.WatchCount != 1 {
+		t.Fatalf("expected 1 active watch, got %v (err: %v)", status.WatchCount, err)
+	}
+
+	// Trigger approval on mock server
+	approved.Store(true)
+
+	// Wait for watcher to poll, retrieve, and cache
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		fields, err := client.Get("watched-api", "Production")
+		if err == nil && fields["api_key"] == "secret-val-999" {
+			return // Success!
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for watcher to cache secret")
+}
+
+func TestServerWatchActivationCommand(t *testing.T) {
+	sentinelFile := filepath.Join(t.TempDir(), "activated.txt")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status/tok-act", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":     "approved",
+			"secret_url": "http://" + r.Host + "/secret/tok-act",
+		})
+	})
+	mux.HandleFunc("/secret/tok-act", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"secret": map[string]string{"key": "val"},
+		})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, 1*time.Hour)
+	go srv.Run()
+	defer srv.Stop()
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewClient(sockPath)
+	err := client.Watch(WatchSpec{
+		Token:       "tok-act",
+		StatusURL:   mockServer.URL + "/status/tok-act",
+		SecretName:  "act-secret",
+		Vault:       "Personal",
+		CacheTTLSec: 3600,
+		Activation: &ActivationSpec{
+			Kind: "command",
+			Argv: []string{"touch", sentinelFile},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Watch failed: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sentinelFile); err == nil {
+			return // Sentinel file touched by activation!
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("sentinel file was not created by activation command")
+}
+
+func TestServerUnwatch(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, 1*time.Hour)
+	go srv.Run()
+	defer srv.Stop()
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewClient(sockPath)
+	err := client.Watch(WatchSpec{
+		Token:      "tok-unwatch",
+		StatusURL:  "http://127.0.0.1:9999/status/tok-unwatch",
+		SecretName: "unwatch-me",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.Unwatch("tok-unwatch"); err != nil {
+		t.Fatalf("Unwatch failed: %v", err)
+	}
+
+	status, err := client.Status()
+	if err != nil || status.WatchCount != 0 {
+		t.Fatalf("expected 0 watches after unwatch, got %d", status.WatchCount)
 	}
 }

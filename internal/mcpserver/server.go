@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/johnuopini/secret-gate/internal/daemon"
 	"github.com/johnuopini/secret-gate/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -244,7 +245,8 @@ func (readOnly) Get(string, string) (map[string]string, error) {
 }
 func (readOnly) Store(string, string, map[string]string, int) error { return nil }
 func (readOnly) EnsureRunning() error                               { return nil }
-
+func (readOnly) Watch(daemon.WatchSpec) error                       { return nil }
+func (readOnly) Unwatch(string) error                               { return nil }
 func handleSearchSecrets(_ context.Context, pc ProxyClient, input SearchSecretsInput) (*mcp.CallToolResult, SearchSecretsOutput, error) {
 	out, err := svc(nil, pc, Config{}).Search(input.Query, input.Limit)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/johnuopini/secret-gate/internal/daemon"
 )
 
 // newApprovalServer scripts a submit → pending → approved → secret flow.
@@ -66,8 +68,9 @@ func (m *memDaemon) Store(name, vault string, fields map[string]string, ttl int)
 	m.data[name] = fields
 	return nil
 }
-func (m *memDaemon) EnsureRunning() error { m.running = true; return nil }
-
+func (m *memDaemon) EnsureRunning() error           { m.running = true; return nil }
+func (m *memDaemon) Watch(daemon.WatchSpec) error  { return nil }
+func (m *memDaemon) Unwatch(token string) error    { return nil }
 func TestProxySubmitReturnsPendingRequest(t *testing.T) {
 	srv := newApprovalServer(t, 1000)
 	pc := NewHTTPProxyClient(srv.URL, newMemDaemon(), 3600)
@@ -134,5 +137,52 @@ func TestProxyErrorCodes(t *testing.T) {
 	dead := NewHTTPProxyClient("http://127.0.0.1:1", newMemDaemon(), 3600)
 	if _, err := dead.Search("x", 5); CodeOf(err) != ErrNetwork {
 		t.Fatalf("connection refused: CodeOf = %v, want network", CodeOf(err))
+	}
+}
+
+func TestProxyStatusWaitLongPoll(t *testing.T) {
+	mux := http.NewServeMux()
+	var waitReceived string
+	mux.HandleFunc("/status/tok-wait", func(w http.ResponseWriter, r *http.Request) {
+		waitReceived = r.URL.Query().Get("wait")
+		json.NewEncoder(w).Encode(map[string]string{"status": "pending", "message": "waiting"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pc := NewHTTPProxyClient(srv.URL, newMemDaemon(), 3600)
+	async := pc.(AsyncProxyClient)
+
+	st, err := async.StatusWait(context.Background(), srv.URL+"/status/tok-wait", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != "pending" {
+		t.Fatalf("status = %v", st.Status)
+	}
+	if waitReceived != "20" {
+		t.Fatalf("expected wait=20 query param, got %q", waitReceived)
+	}
+}
+
+func TestProxyHybridWaitYieldsPending(t *testing.T) {
+	srv := newApprovalServer(t, 1000)
+	pc := NewHTTPProxyClient(srv.URL, newMemDaemon(), 3600).(*httpProxyClient)
+	pc.syncWait = 50 * time.Millisecond
+	pc.pollInterval = 10 * time.Millisecond
+	pc.pollTimeout = 5 * time.Second
+
+	result, err := pc.Request(context.Background(), "deploy-key", "Infra", "deploy", nil, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pending" {
+		t.Fatalf("expected pending status on hybrid yield, got %q", result.Status)
+	}
+	if result.Token != "tok123" {
+		t.Fatalf("expected token tok123, got %q", result.Token)
+	}
+	if result.Resume == "" {
+		t.Fatal("expected non-empty resume command")
 	}
 }

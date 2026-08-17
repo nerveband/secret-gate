@@ -135,3 +135,25 @@ func (c *Client) StopDaemon() error {
 	}
 	return nil
 }
+
+func (c *Client) Watch(spec WatchSpec) error {
+	resp, err := c.send(Request{Command: CmdWatch, Watch: &spec})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+func (c *Client) Unwatch(token string) error {
+	resp, err := c.send(Request{Command: CmdUnwatch, Token: token})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}

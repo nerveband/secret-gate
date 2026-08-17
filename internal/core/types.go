@@ -20,6 +20,8 @@ type FullDaemonClient interface {
 	Get(secretName, vault string) (map[string]string, error)
 	Store(secretName, vault string, fields map[string]string, ttl int) error
 	EnsureRunning() error
+	Watch(spec daemon.WatchSpec) error
+	Unwatch(token string) error
 }
 
 // AdminDaemonClient adds the cache administration verbs used by the CLI
@@ -48,6 +50,7 @@ type ProxyClient interface {
 type AsyncProxyClient interface {
 	Submit(ctx context.Context, secretName, vault, reason string, fields []string, requestContext RequestContext) (*PendingRequest, error)
 	Status(ctx context.Context, statusURL string) (*StatusResult, error)
+	StatusWait(ctx context.Context, statusURL string, waitSec int) (*StatusResult, error)
 	Retrieve(ctx context.Context, secretURL, secretName, vault string) (*RequestResult, error)
 }
 
@@ -82,11 +85,12 @@ type FieldInfo struct {
 
 // RequestContext describes the requesting agent for the Telegram approver.
 type RequestContext struct {
-	Agent   string `json:"agent,omitempty" jsonschema:"agent name, such as Codex"`
-	Model   string `json:"model,omitempty" jsonschema:"model name"`
-	Think   string `json:"think,omitempty" jsonschema:"thinking level"`
-	Project string `json:"project,omitempty" jsonschema:"project or repository name"`
-	Task    string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
+	Agent        string `json:"agent,omitempty" jsonschema:"agent name, such as Codex"`
+	Model        string `json:"model,omitempty" jsonschema:"model name"`
+	Think        string `json:"think,omitempty" jsonschema:"thinking level"`
+	Project      string `json:"project,omitempty" jsonschema:"project or repository name"`
+	Task         string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
+	PaseoAgentID string `json:"paseo_agent_id,omitempty" jsonschema:"optional Paseo agent ID for push activation"`
 }
 
 // FieldsResult holds the result of inspecting fields.
@@ -103,6 +107,9 @@ type RequestResult struct {
 	Cached          bool     `json:"cached"`
 	FieldsAvailable []string `json:"fields_available,omitempty"`
 	Message         string   `json:"message,omitempty"`
+	Token           string   `json:"token,omitempty"`
+	ExpiresAt       string   `json:"expires_at,omitempty"`
+	Resume          string   `json:"resume,omitempty"`
 }
 
 // ExecResult holds the redacted result of command execution.

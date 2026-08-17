@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/johnuopini/secret-gate/internal/daemon"
 )
 
 func init() {
@@ -143,6 +144,17 @@ func (a *App) requestSubmit(args []string) int {
 	}
 
 	if *noWait {
+		if a.Admin != nil && a.Admin.IsRunning() {
+			_ = a.Admin.Watch(daemon.WatchSpec{
+				Token:       pending.Token,
+				StatusURL:   pending.StatusURL,
+				SecretName:  *item,
+				Vault:       *vault,
+				Fields:      fields,
+				Activation:  daemon.SniffActivationSpec(),
+				ExpiresAt:   pending.ExpiresAt,
+			})
+		}
 		return a.ok(command, map[string]interface{}{
 			"token":      pending.Token,
 			"status_url": pending.StatusURL,
@@ -223,6 +235,9 @@ func (a *App) requestCancel(args []string) int {
 		return a.fail(command, "not_found", fmt.Sprintf("unknown token %q", token),
 			"tokens are recorded by request submit on this machine")
 	}
+	if a.Admin != nil {
+		_ = a.Admin.Unwatch(token)
+	}
 	return a.ok(command, map[string]interface{}{
 		"token":   token,
 		"state":   "cancelled",
@@ -261,7 +276,7 @@ func (a *App) ledgerSetState(token, state string) {
 func (a *App) waitForApproval(command string, entry LedgerEntry, timeout, poll time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for {
-		st, err := a.Async.Status(context.Background(), entry.StatusURL)
+		st, err := a.Async.StatusWait(context.Background(), entry.StatusURL, 25)
 		if err == nil {
 			switch st.Status {
 			case "approved":
@@ -290,6 +305,8 @@ func (a *App) waitForApproval(command string, entry LedgerEntry, timeout, poll t
 			return a.fail(command, "timeout", "timed out waiting for approval",
 				"resume with: secret-gate request wait "+entry.Token)
 		}
-		time.Sleep(poll)
+		if err != nil {
+			time.Sleep(poll)
+		}
 	}
 }

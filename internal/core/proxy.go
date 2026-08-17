@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
-
 const (
 	defaultPollInterval = 5 * time.Second
 	defaultPollTimeout  = 15 * time.Minute
@@ -24,8 +25,10 @@ type httpProxyClient struct {
 	dc           FullDaemonClient
 	cacheTTLSec  int
 	httpClient   *http.Client
+	waitClient   *http.Client
 	pollInterval time.Duration
 	pollTimeout  time.Duration
+	syncWait     time.Duration
 }
 
 // NewHTTPProxyClient creates a ProxyClient that talks to the secret-gate
@@ -36,8 +39,10 @@ func NewHTTPProxyClient(serverURL string, dc FullDaemonClient, cacheTTLSec int) 
 		dc:           dc,
 		cacheTTLSec:  cacheTTLSec,
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		waitClient:   &http.Client{Timeout: 0},
 		pollInterval: defaultPollInterval,
 		pollTimeout:  defaultPollTimeout,
+		syncWait:     defaultSyncWait(),
 	}
 }
 
@@ -252,16 +257,72 @@ func (p *httpProxyClient) post(payload requestPayload) (*PendingRequest, error) 
 	return &PendingRequest{Token: reqResp.Token, StatusURL: reqResp.StatusURL, ExpiresAt: reqResp.ExpiresAt}, nil
 }
 
-func (p *httpProxyClient) Status(_ context.Context, statusURL string) (*StatusResult, error) {
-	respBody, err := p.getJSON(statusURL)
-	if err != nil {
-		return nil, err
+func (p *httpProxyClient) Status(ctx context.Context, statusURL string) (*StatusResult, error) {
+	return p.StatusWait(ctx, statusURL, 0)
+}
+
+func (p *httpProxyClient) StatusWait(ctx context.Context, statusURL string, waitSec int) (*StatusResult, error) {
+	targetURL := statusURL
+	if waitSec > 0 {
+		sep := "?"
+		if strings.Contains(statusURL, "?") {
+			sep = "&"
+		}
+		targetURL = fmt.Sprintf("%s%swait=%d", statusURL, sep, waitSec)
 	}
+
+	reqTimeout := time.Duration(waitSec+10) * time.Second
+	if reqTimeout < 30*time.Second {
+		reqTimeout = 30 * time.Second
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, reqTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, E(ErrInternal, "creating status request: "+err.Error(), "")
+	}
+
+	client := p.waitClient
+	if client == nil {
+		client = p.httpClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, E(ErrNetwork, "querying status: "+err.Error(), "")
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, E(ErrInternal, "reading status response: "+err.Error(), "")
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, E(ErrNotFound, "request not found or expired", "")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, E(ErrNetwork, fmt.Sprintf("status returned HTTP %d: %s", resp.StatusCode, string(respBody)), "")
+	}
+
 	var status statusResponse
 	if err := json.Unmarshal(respBody, &status); err != nil {
 		return nil, E(ErrInternal, "parsing status response: "+err.Error(), "")
 	}
 	return &StatusResult{Status: status.Status, Message: status.Message, SecretURL: status.SecretURL}, nil
+}
+
+func defaultSyncWait() time.Duration {
+	if val := os.Getenv("SECRET_GATE_SYNC_WAIT"); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			return d
+		}
+		if s, err := strconv.Atoi(val); err == nil && s > 0 {
+			return time.Duration(s) * time.Second
+		}
+	}
+	return 0
 }
 
 func (p *httpProxyClient) Retrieve(_ context.Context, secretURL, secretName, vault string) (*RequestResult, error) {
@@ -305,9 +366,14 @@ func (p *httpProxyClient) Retrieve(_ context.Context, secretURL, secretName, vau
 
 // waitLoop polls the status URL until a terminal state or timeout.
 func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest, secretName, vault string, cache bool) (*RequestResult, error) {
-	ticker := time.NewTicker(p.pollInterval)
-	defer ticker.Stop()
 	deadline := time.After(p.pollTimeout)
+	var syncDeadline <-chan time.Time
+	if p.syncWait > 0 {
+		syncDeadline = time.After(p.syncWait)
+	}
+
+	backoff := 500 * time.Millisecond
+	maxBackoff := 5 * time.Second
 
 	for {
 		select {
@@ -315,29 +381,62 @@ func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest,
 			return nil, ctx.Err()
 		case <-deadline:
 			return &RequestResult{Status: "timeout", SecretName: secretName, Message: "Timed out waiting for approval."}, nil
-		case <-ticker.C:
-			status, err := p.Status(ctx, pending.StatusURL)
-			if err != nil {
+		case <-syncDeadline:
+			resumeCmd := fmt.Sprintf("secret-gate request wait %s", pending.Token)
+			return &RequestResult{
+				Status:     "pending",
+				SecretName: secretName,
+				Token:      pending.Token,
+				ExpiresAt:  pending.ExpiresAt,
+				Resume:     resumeCmd,
+				Message:    fmt.Sprintf("Approval pending on Telegram. Local watcher will cache access when approved. Resume with: %s", resumeCmd),
+			}, nil
+		default:
+		}
+
+		status, err := p.StatusWait(ctx, pending.StatusURL, 25)
+		if err != nil {
+			if CodeOf(err) == ErrNotFound && p.dc != nil && p.dc.IsRunning() {
+				if cached, _ := p.dc.Get(secretName, vault); cached != nil {
+					return &RequestResult{
+						Status:          "approved",
+						SecretName:      secretName,
+						Cached:          true,
+						FieldsAvailable: FieldNames(cached),
+						Message:         "Secret approved and cached in daemon.",
+					}, nil
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-deadline:
+				return &RequestResult{Status: "timeout", SecretName: secretName, Message: "Timed out waiting for approval."}, nil
+			case <-time.After(backoff):
+				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
-			switch status.Status {
-			case "pending":
-				continue
-			case "approved":
-				if cache {
-					return p.Retrieve(ctx, status.SecretURL, secretName, vault)
-				}
-				if _, err := p.getJSON(status.SecretURL); err != nil {
-					return nil, err
-				}
-				return &RequestResult{Status: "completed", SecretName: secretName, Message: "1Password item written after approval."}, nil
-			case "denied":
-				return &RequestResult{Status: "denied", SecretName: secretName, Message: "Request was denied by the approver."}, nil
-			case "expired":
-				return &RequestResult{Status: "expired", SecretName: secretName, Message: "Request expired before approval."}, nil
-			default:
-				return nil, E(ErrInternal, "unknown status: "+status.Status, "")
+		}
+
+		backoff = 500 * time.Millisecond
+
+		switch status.Status {
+		case "pending":
+			continue
+		case "approved":
+			if cache {
+				return p.Retrieve(ctx, status.SecretURL, secretName, vault)
 			}
+			if _, err := p.getJSON(status.SecretURL); err != nil {
+				return nil, err
+			}
+			return &RequestResult{Status: "completed", SecretName: secretName, Message: "1Password item written after approval."}, nil
+		case "denied":
+			return &RequestResult{Status: "denied", SecretName: secretName, Message: "Request was denied by the approver."}, nil
+		case "expired":
+			return &RequestResult{Status: "expired", SecretName: secretName, Message: "Request expired before approval."}, nil
+		default:
+			return nil, E(ErrInternal, "unknown status: "+status.Status, "")
 		}
 	}
 }
@@ -350,6 +449,9 @@ func enrichRequestContext(requestContext RequestContext, hostname, reason string
 		if requestContext.Agent == "" {
 			requestContext.Agent = "Codex"
 		}
+	}
+	if requestContext.PaseoAgentID == "" {
+		requestContext.PaseoAgentID = firstEnv("PASEO_AGENT_ID", "SECRET_GATE_PASEO_AGENT_ID")
 	}
 	if requestContext.Model == "" {
 		requestContext.Model = firstEnv("SECRET_GATE_MODEL", "OPENAI_MODEL", "CODEX_MODEL")
