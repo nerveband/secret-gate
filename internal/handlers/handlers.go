@@ -103,14 +103,15 @@ type StatusResponse struct {
 	SecretURL string `json:"secret_url,omitempty"`
 }
 
-// SecretResponse is the response containing the secret
 type SecretResponse struct {
 	Secret map[string]string `json:"secret"`
+	Vault  string            `json:"vault,omitempty"`
 }
 
-// BatchSecretResponse is the response containing multiple secrets
+// BatchSecretResponse is the response containing multiple secrets.
 type BatchSecretResponse struct {
 	Secrets map[string]map[string]string `json:"secrets"`
+	Vaults  map[string]string            `json:"vaults,omitempty"`
 }
 
 // ErrorResponse is returned on errors
@@ -403,25 +404,49 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
 		return
 	}
-
 	if req.Mutation != nil {
-		s := req.Secrets[0]
-		item, mutationErr := h.opClient.PutItem(s.Vault, s.SecretName, req.Mutation.Operation, req.Mutation.Category, req.Mutation.Fields)
+		claimed, state, claimErr := h.store.ClaimMutation(token)
+		if claimErr != nil {
+			h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
+			return
+		}
+		if state == "completed" {
+			h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{
+				"status": "completed", "operation": claimed.Mutation.Operation,
+				"item": claimed.MutationItem, "vault": claimed.Secrets[0].Vault,
+			}})
+			return
+		}
+		if state == "executing" {
+			h.writeError(w, http.StatusConflict, "mutation_in_progress", "Approved mutation is already being executed")
+			return
+		}
+		if state == "failed" {
+			h.writeError(w, http.StatusInternalServerError, "mutation_outcome_unknown", "Approved mutation did not reach a recoverable completion state")
+			return
+		}
+		s := claimed.Secrets[0]
+		item, mutationErr := h.opClient.PutItem(s.Vault, s.SecretName, claimed.Mutation.Operation, claimed.Mutation.Category, claimed.Mutation.Fields)
 		if mutationErr != nil {
+			_ = h.store.ReleaseMutation(token)
 			h.log.Error("Failed to write 1Password item", logger.F("error", mutationErr.Error(), "request_id", req.ID, "item", s.SecretName, "vault", s.Vault))
 			h.writeError(w, http.StatusInternalServerError, "item_write_failed", "Failed to write item to 1Password")
 			return
 		}
-		h.log.Info("1Password item written", logger.F("request_id", req.ID, "item", item.Title, "vault", s.Vault, "operation", req.Mutation.Operation))
-		h.store.Delete(token)
-		h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{"status": "completed", "operation": req.Mutation.Operation, "item": item.Title, "vault": s.Vault}})
+		if err := h.store.CompleteMutation(token, item.Title); err != nil {
+			h.log.Error("Failed to record completed 1Password write", logger.F("error", err.Error(), "request_id", req.ID))
+			h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
+			return
+		}
+		h.log.Info("1Password item written", logger.F("request_id", req.ID, "item", item.Title, "vault", s.Vault, "operation", claimed.Mutation.Operation))
+		h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{"status": "completed", "operation": claimed.Mutation.Operation, "item": item.Title, "vault": s.Vault}})
 		return
 	}
 
 	// Batch mode: multiple secrets requested or field filtering specified
 	if len(req.Secrets) > 1 || (len(req.Secrets) == 1 && len(req.Secrets[0].Fields) > 0) {
 		result := make(map[string]map[string]string)
-
+		resolvedVaults := make(map[string]string)
 		for _, s := range req.Secrets {
 			vault := s.Vault
 			if vault == "" {
@@ -433,7 +458,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 
 			if vault == "_auto_" {
 				var err error
-				allFields, _, actualName, err = h.opClient.FindSecretAcrossVaults(s.SecretName)
+				allFields, vault, actualName, err = h.opClient.FindSecretAcrossVaults(s.SecretName)
 				if err != nil {
 					h.log.Error("Failed to find secret", logger.F("error", err.Error(), "secret", s.SecretName))
 					h.writeError(w, http.StatusInternalServerError, "secret_fetch_failed", fmt.Sprintf("Failed to retrieve %s: %s", s.SecretName, err.Error()))
@@ -449,6 +474,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 				}
 				actualName = s.SecretName
 			}
+			resolvedVaults[actualName] = vault
 
 			// Filter fields if specified
 			if len(s.Fields) > 0 {
@@ -466,7 +492,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 
 		h.log.Info("Batch secrets retrieved", logger.F("request_id", req.ID, "count", len(result)))
 		h.store.Delete(token)
-		h.writeJSON(w, http.StatusOK, BatchSecretResponse{Secrets: result})
+		h.writeJSON(w, http.StatusOK, BatchSecretResponse{Secrets: result, Vaults: resolvedVaults})
 		return
 	}
 
@@ -494,7 +520,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Info("Secret retrieved", logger.F("request_id", req.ID, "secret", actualSecret, "vault", actualVault))
 	h.store.Delete(token)
-	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret})
+	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret, Vault: actualVault})
 }
 
 func resolveRequestedField(values map[string]string, wanted string) (string, string, bool) {

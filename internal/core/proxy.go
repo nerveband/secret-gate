@@ -12,7 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/requeststate"
 )
+
 const (
 	defaultPollInterval = 5 * time.Second
 	defaultPollTimeout  = 15 * time.Minute
@@ -26,6 +30,8 @@ type httpProxyClient struct {
 	cacheTTLSec  int
 	httpClient   *http.Client
 	waitClient   *http.Client
+	ledger       *requeststate.Ledger
+	ledgerErr    error
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 	syncWait     time.Duration
@@ -33,11 +39,18 @@ type httpProxyClient struct {
 
 // NewHTTPProxyClient creates a ProxyClient that talks to the secret-gate
 // server. The returned client also implements AsyncProxyClient.
-func NewHTTPProxyClient(serverURL string, dc FullDaemonClient, cacheTTLSec int) ProxyClient {
+func NewHTTPProxyClient(serverURL string, dc FullDaemonClient, cacheTTLSec int, stateDirs ...string) ProxyClient {
+	var ledger *requeststate.Ledger
+	var ledgerErr error
+	if len(stateDirs) > 0 && stateDirs[0] != "" {
+		ledger, ledgerErr = requeststate.Open(stateDirs[0])
+	}
 	return &httpProxyClient{
 		serverURL:    serverURL,
 		dc:           dc,
 		cacheTTLSec:  cacheTTLSec,
+		ledger:       ledger,
+		ledgerErr:    ledgerErr,
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
 		waitClient:   &http.Client{Timeout: 0},
 		pollInterval: defaultPollInterval,
@@ -108,6 +121,8 @@ type statusResponse struct {
 type secretResponse struct {
 	Secret  map[string]string            `json:"secret"`
 	Secrets map[string]map[string]string `json:"secrets"`
+	Vault   string                       `json:"vault,omitempty"`
+	Vaults  map[string]string            `json:"vaults,omitempty"`
 }
 
 type errorResponse struct {
@@ -208,7 +223,7 @@ func (p *httpProxyClient) Request(ctx context.Context, secretName, vault, reason
 	if err != nil {
 		return nil, err
 	}
-	return p.waitLoop(ctx, pending, secretName, vault, true)
+	return p.waitLoop(ctx, pending, secretName, vault, true, fields)
 }
 
 func (p *httpProxyClient) Write(ctx context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error) {
@@ -216,16 +231,16 @@ func (p *httpProxyClient) Write(ctx context.Context, secretName, vault, reason, 
 	requestContext = enrichRequestContext(requestContext, hostname, reason)
 	payload := requestPayload{
 		SecretName: secretName, Vault: vault, Machine: hostname, Reason: reason,
-		Action:  operation,
-		Secrets: []secretRequestPayload{{SecretName: secretName, Vault: vault}},
-		Context: requestContext,
+		Action:   operation,
+		Secrets:  []secretRequestPayload{{SecretName: secretName, Vault: vault}},
+		Context:  requestContext,
 		Mutation: &mutationPayload{Operation: operation, Category: category, Fields: fields},
 	}
 	pending, err := p.post(payload)
 	if err != nil {
 		return nil, err
 	}
-	return p.waitLoop(ctx, pending, secretName, vault, false)
+	return p.waitLoop(ctx, pending, secretName, vault, false, nil)
 }
 
 // --- AsyncProxyClient implementation ---
@@ -347,25 +362,43 @@ func (p *httpProxyClient) Retrieve(_ context.Context, secretURL, secretName, vau
 		return nil, E(ErrInternal, fmt.Sprintf("secret response did not contain fields for %q", secretName), "")
 	}
 
-	result := &RequestResult{
-		Status:          "approved",
-		SecretName:      secretName,
-		Cached:          true,
-		FieldsAvailable: FieldNames(fields),
-		Message:         "Secret approved and cached. Use exec, ssh, otp, or item read --reveal to use it.",
-	}
 	if p.dc != nil {
 		if err := p.dc.EnsureRunning(); err != nil {
-			result.Message = "Warning: secret approved but daemon failed to start: " + err.Error()
-		} else if err := p.dc.Store(secretName, vault, fields, p.cacheTTLSec); err != nil {
-			result.Message = "Warning: secret approved but caching failed: " + err.Error()
+			return nil, E(ErrInternal, "secret was approved but the local daemon could not start: "+err.Error(),
+				"retry the request after restoring the local daemon")
+		}
+		resolvedVault := secretResp.Vault
+		if resolvedVault == "" {
+			resolvedVault = secretResp.Vaults[secretName]
+		}
+		if resolvedVault == "" && len(secretResp.Vaults) == 1 {
+			for _, only := range secretResp.Vaults {
+				resolvedVault = only
+			}
+		}
+		if resolvedVault == "" {
+			resolvedVault = vault
+		}
+		if err := p.dc.Store(secretName, resolvedVault, fields, p.cacheTTLSec); err != nil {
+			return nil, E(ErrInternal, "secret was approved but could not be cached locally: "+err.Error(),
+				"submit a new approval request; the one-time response has already been consumed")
+		}
+		if vault != resolvedVault {
+			if err := p.dc.Store(secretName, vault, fields, p.cacheTTLSec); err != nil {
+				return nil, E(ErrInternal, "secret was approved but its requested-vault cache alias failed: "+err.Error(), "")
+			}
 		}
 	}
-	return result, nil
+	return &RequestResult{
+		Status:          "approved",
+		SecretName:      secretName,
+		Cached:          p.dc != nil,
+		FieldsAvailable: FieldNames(fields),
+		Message:         "Secret approved and cached. Use exec, ssh, otp, or item read --reveal to use it.",
+	}, nil
 }
 
-// waitLoop polls the status URL until a terminal state or timeout.
-func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest, secretName, vault string, cache bool) (*RequestResult, error) {
+func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest, secretName, vault string, cache bool, fields []string) (*RequestResult, error) {
 	deadline := time.After(p.pollTimeout)
 	var syncDeadline <-chan time.Time
 	if p.syncWait > 0 {
@@ -382,15 +415,49 @@ func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest,
 		case <-deadline:
 			return &RequestResult{Status: "timeout", SecretName: secretName, Message: "Timed out waiting for approval."}, nil
 		case <-syncDeadline:
-			resumeCmd := fmt.Sprintf("secret-gate request wait %s", pending.Token)
-			return &RequestResult{
-				Status:     "pending",
-				SecretName: secretName,
-				Token:      pending.Token,
-				ExpiresAt:  pending.ExpiresAt,
-				Resume:     resumeCmd,
-				Message:    fmt.Sprintf("Approval pending on Telegram. Local watcher will cache access when approved. Resume with: %s", resumeCmd),
-			}, nil
+			if p.dc == nil {
+				return nil, E(ErrInternal, "approval is still pending and no local daemon is available to finish it", "")
+			}
+			operation := "read"
+			if !cache {
+				operation = "write"
+			}
+			stateDir := ""
+			if p.ledger != nil {
+				stateDir = p.ledger.Dir()
+				if err := p.ledger.Put(requeststate.Entry{
+					Token: pending.Token, SecretName: secretName, Vault: vault,
+					StatusURL: pending.StatusURL, SubmittedAt: time.Now().UTC().Format(time.RFC3339),
+					ExpiresAt: pending.ExpiresAt, Operation: operation, State: "pending",
+				}); err != nil {
+					return nil, E(ErrInternal, "approval is pending but request recovery state could not be saved: "+err.Error(), "")
+				}
+			}
+			if p.ledgerErr != nil {
+				return nil, E(ErrInternal, "approval is pending but request recovery state is unavailable: "+p.ledgerErr.Error(), "")
+			}
+			if err := p.dc.Watch(daemon.WatchSpec{
+				Token:       pending.Token,
+				StatusURL:   pending.StatusURL,
+				SecretName:  secretName,
+				Vault:       vault,
+				Fields:      fields,
+				IsMutation:  !cache,
+				CacheTTLSec: p.cacheTTLSec,
+				ExpiresAt:   pending.ExpiresAt,
+				Activation:  daemon.SniffActivationSpec(),
+				StateDir:    stateDir,
+			}); err != nil {
+				return nil, E(ErrInternal, "approval is still pending and the local watcher could not start: "+err.Error(), "")
+			}
+			result := &RequestResult{
+				Status: "pending", SecretName: secretName, Token: pending.Token, ExpiresAt: pending.ExpiresAt,
+				Message: "Approval pending on Telegram. The local watcher will finish the operation and notify this agent.",
+			}
+			if p.ledger != nil {
+				result.Resume = fmt.Sprintf("secret-gate request wait %s", pending.Token)
+			}
+			return result, nil
 		default:
 		}
 

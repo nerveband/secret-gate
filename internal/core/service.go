@@ -221,7 +221,7 @@ func BuildSSHArgs(host string, port int, command string) []string {
 	if port <= 0 {
 		port = defaultSSHPort
 	}
-	args := []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+	args := []string{"ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 		"-p", fmt.Sprintf("%d", port), host}
 	if command != "" {
 		args = append(args, command)
@@ -271,7 +271,7 @@ func (s *Service) SSH(ctx context.Context, req SSHRequest) (*ExecOutcome, error)
 	if port <= 0 {
 		port = defaultSSHPort
 	}
-	argv := []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+	argv := []string{"ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 		"-p", fmt.Sprintf("%d", port)}
 	if identityPath != "" {
 		argv = append(argv, "-o", "IdentitiesOnly=yes", "-i", identityPath)

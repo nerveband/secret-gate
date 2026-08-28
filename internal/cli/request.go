@@ -137,23 +137,36 @@ func (a *App) requestSubmit(args []string) int {
 		Vault:       *vault,
 		StatusURL:   pending.StatusURL,
 		SubmittedAt: a.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:   pending.ExpiresAt,
+		Operation:   "read",
 		State:       "pending",
 	}
-	if l, lerr := OpenLedger(a.StateDir); lerr == nil {
-		_ = l.Put(entry)
+	l, ledgerErr := OpenLedger(a.StateDir)
+	if ledgerErr != nil {
+		return a.fail(command, "internal", "request was submitted but local recovery state could not be opened: "+ledgerErr.Error(),
+			"save the token and status URL from the approver notification")
 	}
-
+	if err := l.Put(entry); err != nil {
+		return a.fail(command, "internal", "request was submitted but local recovery state could not be saved: "+err.Error(),
+			"save the token and status URL from the approver notification")
+	}
 	if *noWait {
-		if a.Admin != nil && a.Admin.IsRunning() {
-			_ = a.Admin.Watch(daemon.WatchSpec{
-				Token:       pending.Token,
-				StatusURL:   pending.StatusURL,
-				SecretName:  *item,
-				Vault:       *vault,
-				Fields:      fields,
-				Activation:  daemon.SniffActivationSpec(),
-				ExpiresAt:   pending.ExpiresAt,
-			})
+		if a.Admin == nil {
+			return a.fail(command, "internal", "request was submitted but the local daemon is unavailable", "")
+		}
+		if err := a.Admin.Watch(daemon.WatchSpec{
+			Token:       pending.Token,
+			StatusURL:   pending.StatusURL,
+			SecretName:  *item,
+			Vault:       *vault,
+			Fields:      fields,
+			CacheTTLSec: a.Service.Config.CacheTTLSec,
+			Activation:  daemon.SniffActivationSpec(),
+			ExpiresAt:   pending.ExpiresAt,
+			StateDir:    a.StateDir,
+		}); err != nil {
+			return a.fail(command, "internal", "request was submitted but background recovery could not be registered: "+err.Error(),
+				"resume with: secret-gate request wait "+pending.Token)
 		}
 		return a.ok(command, map[string]interface{}{
 			"token":      pending.Token,
@@ -178,12 +191,24 @@ func (a *App) requestStatus(args []string) int {
 			"usage: secret-gate request status <token>")
 	}
 	token := fs.Arg(0)
-	entry, ok := a.ledgerEntry(command, token)
+	entry, err := a.ledgerEntry(token)
+	if err != nil {
+		return a.fail(command, "internal", "cannot read request ledger: "+err.Error(), "")
+	}
 	if entry == nil {
-		return okOrNotFound(a, command, token, ok)
+		return okOrNotFound(a, command, token)
+	}
+	if code, done := a.terminalRequest(command, entry); done {
+		return code
 	}
 	st, err := a.Async.Status(context.Background(), entry.StatusURL)
 	if err != nil {
+		if core.CodeOf(err) == core.ErrNotFound {
+			if result, ok := a.reconcileCached(entry); ok {
+				return a.ok(command, result, &Meta{Visibility: VisibilityMetadataOnly, Cache: "hit"})
+			}
+			a.ledgerSetState(token, "expired")
+		}
 		return a.failErr(command, err)
 	}
 	if st.Status == "denied" || st.Status == "expired" || st.Status == "approved" {
@@ -209,9 +234,12 @@ func (a *App) requestWait(args []string) int {
 			"usage: secret-gate request wait <token>")
 	}
 	token := fs.Arg(0)
-	entry, ok := a.ledgerEntry(command, token)
+	entry, err := a.ledgerEntry(token)
+	if err != nil {
+		return a.fail(command, "internal", "cannot read request ledger: "+err.Error(), "")
+	}
 	if entry == nil {
-		return okOrNotFound(a, command, token, ok)
+		return okOrNotFound(a, command, token)
 	}
 	return a.waitForApproval(command, *entry, *timeout, *pollInterval)
 }
@@ -231,12 +259,19 @@ func (a *App) requestCancel(args []string) int {
 	if err != nil {
 		return a.fail(command, "internal", "cannot open request ledger: "+err.Error(), "")
 	}
-	if err := l.SetState(token, "cancelled"); err != nil {
+	if _, ok, err := l.Get(token); err != nil {
+		return a.fail(command, "internal", "cannot read request ledger: "+err.Error(), "")
+	} else if !ok {
 		return a.fail(command, "not_found", fmt.Sprintf("unknown token %q", token),
 			"tokens are recorded by request submit on this machine")
 	}
 	if a.Admin != nil {
-		_ = a.Admin.Unwatch(token)
+		if err := a.Admin.Unwatch(token); err != nil {
+			return a.fail(command, "internal", "could not durably cancel background recovery: "+err.Error(), "")
+		}
+	}
+	if err := l.SetState(token, "cancelled"); err != nil {
+		return a.fail(command, "internal", "background recovery was cancelled but request state could not be updated: "+err.Error(), "")
 	}
 	return a.ok(command, map[string]interface{}{
 		"token":   token,
@@ -245,23 +280,24 @@ func (a *App) requestCancel(args []string) int {
 	}, &Meta{Visibility: VisibilityMetadataOnly})
 }
 
-// --- shared helpers ---
-
-// ledgerEntry loads a token's entry; nil entry means the caller must
-// return okOrNotFound (unknown token or ledger failure).
-func (a *App) ledgerEntry(command, token string) (*LedgerEntry, bool) {
+// ledgerEntry loads a token's entry. A nil entry with nil error means the
+// token is unknown; malformed or unreadable state is preserved as an error.
+func (a *App) ledgerEntry(token string) (*LedgerEntry, error) {
 	l, err := OpenLedger(a.StateDir)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	entry, ok, err := l.Get(token)
-	if err != nil || !ok {
-		return nil, false
+	if err != nil {
+		return nil, err
 	}
-	return entry, true
+	if !ok {
+		return nil, nil
+	}
+	return entry, nil
 }
 
-func okOrNotFound(a *App, command, token string, _ bool) int {
+func okOrNotFound(a *App, command, token string) int {
 	return a.fail(command, "not_found", fmt.Sprintf("unknown token %q", token),
 		"tokens are recorded by request submit on this machine; list the ledger at $SECRET_GATE_STATE_DIR/requests.json")
 }
@@ -276,13 +312,30 @@ func (a *App) ledgerSetState(token, state string) {
 func (a *App) waitForApproval(command string, entry LedgerEntry, timeout, poll time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for {
+		if latest, ledgerErr := a.ledgerEntry(entry.Token); ledgerErr != nil {
+			return a.fail(command, "internal", "cannot read request ledger: "+ledgerErr.Error(), "")
+		} else if latest != nil {
+			entry = *latest
+			if code, done := a.terminalRequest(command, latest); done {
+				return code
+			}
+		}
 		st, err := a.Async.StatusWait(context.Background(), entry.StatusURL, 25)
 		if err == nil {
 			switch st.Status {
 			case "approved":
-				res, rerr := a.Async.Retrieve(context.Background(), st.SecretURL, entry.SecretName, entry.Vault)
-				if rerr != nil {
-					return a.failErr(command, rerr)
+				if entry.Operation == "write" {
+					time.Sleep(poll)
+					continue
+				}
+				res, retrieveErr := a.Async.Retrieve(context.Background(), st.SecretURL, entry.SecretName, entry.Vault)
+				if retrieveErr != nil {
+					if core.CodeOf(retrieveErr) == core.ErrNotFound {
+						if result, ok := a.reconcileCached(&entry); ok {
+							return a.ok(command, result, &Meta{Visibility: VisibilityMetadataOnly, Cache: "hit"})
+						}
+					}
+					return a.failErr(command, retrieveErr)
 				}
 				a.ledgerSetState(entry.Token, "approved")
 				if !a.Quiet {
@@ -300,6 +353,23 @@ func (a *App) waitForApproval(command string, entry LedgerEntry, timeout, poll t
 			if !a.Quiet {
 				fmt.Fprint(a.Stderr, ".")
 			}
+		} else if core.CodeOf(err) == core.ErrNotFound {
+			if latest, ledgerErr := a.ledgerEntry(entry.Token); ledgerErr == nil && latest != nil {
+				entry = *latest
+				if code, done := a.terminalRequest(command, latest); done {
+					return code
+				}
+			}
+			if entry.Operation == "write" {
+				time.Sleep(poll)
+				continue
+			}
+			if result, ok := a.reconcileCached(&entry); ok {
+				return a.ok(command, result, &Meta{Visibility: VisibilityMetadataOnly, Cache: "hit"})
+			}
+			a.ledgerSetState(entry.Token, "expired")
+			return a.fail(command, "expired", "request is no longer available and no cached result exists",
+				"submit a new request")
 		}
 		if time.Now().After(deadline) {
 			return a.fail(command, "timeout", "timed out waiting for approval",
@@ -309,4 +379,39 @@ func (a *App) waitForApproval(command string, entry LedgerEntry, timeout, poll t
 			time.Sleep(poll)
 		}
 	}
+}
+
+func (a *App) terminalRequest(command string, entry *LedgerEntry) (int, bool) {
+	switch entry.State {
+	case "completed":
+		return a.ok(command, map[string]interface{}{
+			"token": entry.Token, "secret_name": entry.SecretName, "status": "completed",
+			"message": "1Password item written after approval.",
+		}, &Meta{Visibility: VisibilityMetadataOnly}), true
+	case "denied":
+		return a.fail(command, "denied", "request was denied by the approver", ""), true
+	case "expired":
+		return a.fail(command, "expired", "request expired before approval", "submit a new request"), true
+	case "failed":
+		return a.fail(command, "internal", "approved request failed during background completion", "submit a new request"), true
+	case "cancelled":
+		return a.fail(command, "not_found", "local request tracking was cancelled", "submit a new request"), true
+	default:
+		return 0, false
+	}
+}
+
+func (a *App) reconcileCached(entry *LedgerEntry) (*core.RequestResult, bool) {
+	fields, err := a.Service.CachedFields(entry.SecretName, entry.Vault)
+	if err != nil {
+		return nil, false
+	}
+	a.ledgerSetState(entry.Token, "approved")
+	return &core.RequestResult{
+		Status:          "approved",
+		SecretName:      entry.SecretName,
+		Cached:          true,
+		FieldsAvailable: core.FieldNames(fields),
+		Message:         "Secret approved and cached by the background watcher.",
+	}, true
 }

@@ -29,6 +29,7 @@ type WatchSpec struct {
 	CacheTTLSec   int             `json:"cache_ttl_seconds,omitempty"`
 	ExpiresAt     string          `json:"expires_at,omitempty"`
 	Activation    *ActivationSpec `json:"activation,omitempty"`
+	StateDir      string          `json:"state_dir,omitempty"`
 }
 
 type WatchInfo struct {

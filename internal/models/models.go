@@ -43,22 +43,25 @@ type ItemMutation struct {
 
 // ApprovalRequest represents a request to access a secret
 type ApprovalRequest struct {
-	ID               string          `json:"id"`
-	Token            string          `json:"token"`
-	SecretName       string          `json:"secret_name"`
-	Vault            string          `json:"vault"`
-	Secrets          []SecretRequest `json:"secrets,omitempty"` // Batch mode
-	RequesterMachine string          `json:"requester_machine"`
-	RequesterIP      string          `json:"requester_ip"`
-	Reason           string          `json:"reason,omitempty"`
-	Action           string          `json:"action,omitempty"`
-	Context          RequestContext  `json:"context,omitempty"`
-	Mutation         *ItemMutation   `json:"mutation,omitempty"`
-	Status           RequestStatus   `json:"status"`
-	RequestedAt      time.Time       `json:"requested_at"`
-	ExpiresAt        time.Time       `json:"expires_at"`
-	RespondedAt      *time.Time      `json:"responded_at,omitempty"`
-	TelegramMsgID    int             `json:"telegram_msg_id,omitempty"`
+	ID                string          `json:"id"`
+	Token             string          `json:"token"`
+	SecretName        string          `json:"secret_name"`
+	Vault             string          `json:"vault"`
+	Secrets           []SecretRequest `json:"secrets,omitempty"` // Batch mode
+	RequesterMachine  string          `json:"requester_machine"`
+	RequesterIP       string          `json:"requester_ip"`
+	Reason            string          `json:"reason,omitempty"`
+	Action            string          `json:"action,omitempty"`
+	Context           RequestContext  `json:"context,omitempty"`
+	Mutation          *ItemMutation   `json:"mutation,omitempty"`
+	Status            RequestStatus   `json:"status"`
+	RequestedAt       time.Time       `json:"requested_at"`
+	ExpiresAt         time.Time       `json:"expires_at"`
+	RespondedAt       *time.Time      `json:"responded_at,omitempty"`
+	TelegramMsgID     int             `json:"telegram_msg_id,omitempty"`
+	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
+	MutationItem      string          `json:"mutation_item,omitempty"`
+	MutationStartedAt *time.Time      `json:"mutation_started_at,omitempty"`
 }
 
 // SecretValue holds the retrieved secret data

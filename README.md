@@ -161,6 +161,13 @@ secret-gate otp show --item "github" --reveal
 ```
 
 The client binary (`secret-gate`) runs on the machine where your AI coding agent operates. It handles communication with the server and manages a local caching daemon.
+
+Pending approvals are recorded in `requests.json` under the client state directory. The daemon also persists metadata-only watcher records, restores non-expired watches after a restart, and updates request state when background work completes. Secret values remain memory-only and are never written to either state file.
+
+Tracked requests move monotonically from `pending` to `approved` (read), `completed` (write), `denied`, `expired`, `failed`, or `cancelled`. Concurrent client and daemon updates are serialized with a process-shared file lock and crash-durable atomic writes.
+
+Managed SSH commands use an isolated OpenSSH configuration (`-F /dev/null`) with explicit host, port, identity, batch mode, and host-key options. User-level `Include`, `ProxyJump`, and host aliases are intentionally not applied; pass the concrete destination to `--host`.
+
 ### From the server
 
 The server hosts pre-compiled client binaries for Linux and macOS at `/client/{os}/{arch}`:
@@ -320,6 +327,9 @@ The client includes a background daemon that caches approved secrets in memory, 
 - Secrets are cached for the configured `cache_ttl` (default: 1 hour)
 - The daemon exits automatically after `daemon_idle_timeout` of inactivity (default: 5 minutes)
 - Communication between the client and daemon uses a Unix socket with `0600` permissions
+- Pending watcher metadata is persisted with `0600` permissions and restored after daemon restarts
+- Completed reads and writes update the durable request ledger before notifying the requesting agent
+- Failed write completion is retried until request expiry and reported as `failed`, never as a successful approval
 
 **Daemon commands:**
 

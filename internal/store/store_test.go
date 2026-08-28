@@ -213,3 +213,37 @@ func TestStoreConcurrentWatchAndUpdate(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestClaimMutationAllowsOneConcurrentExecutor(t *testing.T) {
+	s := store.New()
+	req := newTestRequest("tok-mutation", "req-mutation", models.StatusApproved, time.Minute)
+	req.Mutation = &models.ItemMutation{Operation: "create", Fields: map[string]string{"notes": "value"}}
+	if err := s.Save(req); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	states := make(chan string, 20)
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, state, err := s.ClaimMutation(req.Token)
+			if err != nil {
+				states <- "error"
+				return
+			}
+			states <- state
+		}()
+	}
+	wg.Wait()
+	close(states)
+	claimed := 0
+	for state := range states {
+		if state == "claimed" {
+			claimed++
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("claimed executors = %d, want 1", claimed)
+	}
+}

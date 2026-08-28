@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -101,6 +102,7 @@ func (s *Store) Update(req *models.ApprovalRequest) error {
 	}
 	return nil
 }
+
 // Delete removes a request from the store
 func (s *Store) Delete(token string) error {
 	s.mu.Lock()
@@ -114,6 +116,72 @@ func (s *Store) Delete(token string) error {
 	delete(s.requests, token)
 	delete(s.byID, req.ID)
 	delete(s.watchers, token)
+	return nil
+}
+
+// ClaimMutation atomically grants one caller permission to execute an approved
+// mutation. Completed mutations return their stored result; executing
+// mutations remain owned by the original caller.
+func (s *Store) ClaimMutation(token string) (*models.ApprovalRequest, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.requests[token]
+	if !ok {
+		return nil, "", ErrNotFound
+	}
+	if req.Mutation == nil || req.Status != models.StatusApproved || req.IsExpired() {
+		return nil, "", ErrNotFound
+	}
+	switch req.MutationState {
+	case "completed":
+		copy := *req
+		return &copy, "completed", nil
+	case "failed":
+		copy := *req
+		return &copy, "failed", nil
+	case "executing":
+		if req.MutationStartedAt != nil && time.Since(*req.MutationStartedAt) >= 30*time.Second {
+			req.MutationState = "failed"
+			copy := *req
+			return &copy, "failed", nil
+		}
+		return nil, "executing", nil
+	default:
+		now := time.Now()
+		req.MutationState = "executing"
+		req.MutationStartedAt = &now
+		copy := *req
+		return &copy, "claimed", nil
+	}
+}
+
+func (s *Store) CompleteMutation(token, item string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.requests[token]
+	if !ok {
+		return ErrNotFound
+	}
+	if req.MutationState != "executing" {
+		return fmt.Errorf("mutation %q is not executing", token)
+	}
+	req.MutationStartedAt = nil
+	req.MutationState = "completed"
+	req.MutationItem = item
+	return nil
+}
+
+func (s *Store) ReleaseMutation(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.requests[token]
+	if !ok {
+		return ErrNotFound
+	}
+	if req.MutationState == "executing" {
+		req.MutationStartedAt = nil
+		req.MutationState = ""
+	}
 	return nil
 }
 

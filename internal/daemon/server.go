@@ -30,12 +30,15 @@ func NewServer(socketPath string, cacheTTL time.Duration) *Server {
 		cache:      c,
 		cacheTTL:   cacheTTL,
 		startedAt:  time.Now(),
-		watcher:    NewWatcher(c, cacheTTL),
+		watcher:    NewWatcher(c, cacheTTL, socketPath+".watches.json"),
 		stopCh:     make(chan struct{}),
 	}
 }
 
 func (s *Server) Run() error {
+	if s.watcher.restoreErr != nil {
+		return s.watcher.restoreErr
+	}
 	os.Remove(s.socketPath)
 
 	ln, err := net.Listen("unix", s.socketPath)
@@ -191,7 +194,10 @@ func (s *Server) handleWatch(req Request) Response {
 	if req.Watch.CacheTTLSec <= 0 {
 		req.Watch.CacheTTLSec = int(s.cacheTTL.Seconds())
 	}
-	newlyRegistered := s.watcher.Register(*req.Watch)
+	newlyRegistered, err := s.watcher.Register(*req.Watch)
+	if err != nil {
+		return Response{OK: false, Error: "persist watch: " + err.Error()}
+	}
 	state := "registered"
 	if !newlyRegistered {
 		state = "duplicate"
@@ -203,8 +209,15 @@ func (s *Server) handleUnwatch(req Request) Response {
 	if req.Token == "" {
 		return Response{OK: false, Error: "token is required for unwatch"}
 	}
-	s.watcher.Unwatch(req.Token)
-	return Response{OK: true}
+	removed, err := s.watcher.Unwatch(req.Token)
+	if err != nil {
+		return Response{OK: false, Error: "persist unwatch: " + err.Error()}
+	}
+	state := "not_found"
+	if removed {
+		state = "removed"
+	}
+	return Response{OK: true, WatchState: state}
 }
 
 func (s *Server) writeResponse(conn net.Conn, resp Response) {

@@ -170,7 +170,7 @@ func TestServiceWriteValidation(t *testing.T) {
 
 func TestBuildSSHArgs(t *testing.T) {
 	got := BuildSSHArgs("deploy@web1.example.com", 0, "uptime")
-	want := []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+	want := []string{"ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 		"-p", "22", "deploy@web1.example.com", "uptime"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("BuildSSHArgs = %v", got)

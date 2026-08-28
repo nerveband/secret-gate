@@ -65,20 +65,15 @@ func newApp() *cli.App {
 	if cacheTTLSec <= 0 {
 		cacheTTLSec = 3600
 	}
+	stateDir := requestStateDir()
 	dc := core.NewRealDaemonClientWithConfig(cacheTTLSec)
-	pc := core.NewHTTPProxyClient(cfg.ServerURL, dc, cacheTTLSec)
+	pc := core.NewHTTPProxyClient(cfg.ServerURL, dc, cacheTTLSec, stateDir)
 	svc := core.NewService(core.Config{
 		ServerURL:   cfg.ServerURL,
 		CacheTTLSec: cacheTTLSec,
 		SSHAgent:    cfg.SSHAgentIntegration,
 	}, dc, pc)
 	async, _ := pc.(core.AsyncProxyClient)
-
-	stateDir := os.Getenv("SECRET_GATE_STATE_DIR")
-	if stateDir == "" {
-		home, _ := os.UserHomeDir()
-		stateDir = filepath.Join(home, ".local", "state", "secret-gate")
-	}
 
 	return &cli.App{
 		Version:   version.Version,
@@ -117,9 +112,10 @@ func runMCP() {
 	if cacheTTLSec <= 0 {
 		cacheTTLSec = 3600
 	}
+	stateDir := requestStateDir()
 	dc := mcpserver.NewRealDaemonClientWithConfig(cacheTTLSec)
 	_ = dc.EnsureRunning()
-	pc := mcpserver.NewHTTPProxyClient(cfg.ServerURL, dc, cacheTTLSec)
+	pc := core.NewHTTPProxyClient(cfg.ServerURL, dc, cacheTTLSec, stateDir)
 	mcpCfg := mcpserver.Config{
 		ServerURL:   cfg.ServerURL,
 		CacheTTLSec: cacheTTLSec,
@@ -132,4 +128,12 @@ func runMCP() {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func requestStateDir() string {
+	if dir := os.Getenv("SECRET_GATE_STATE_DIR"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", "secret-gate")
 }

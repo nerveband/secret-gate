@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/requeststate"
 )
 
 // newApprovalServer scripts a submit → pending → approved → secret flow.
@@ -50,9 +51,12 @@ func newApprovalServer(t *testing.T, approveAfter int32) *httptest.Server {
 type memDaemon struct {
 	running bool
 	data    map[string]map[string]string
+	watches []daemon.WatchSpec
 }
 
-func newMemDaemon() *memDaemon { return &memDaemon{running: true, data: map[string]map[string]string{}} }
+func newMemDaemon() *memDaemon {
+	return &memDaemon{running: true, data: map[string]map[string]string{}}
+}
 
 func (m *memDaemon) IsRunning() bool { return m.running }
 func (m *memDaemon) StatusInfo() (*DaemonStatusResult, error) {
@@ -68,9 +72,12 @@ func (m *memDaemon) Store(name, vault string, fields map[string]string, ttl int)
 	m.data[name] = fields
 	return nil
 }
-func (m *memDaemon) EnsureRunning() error           { m.running = true; return nil }
-func (m *memDaemon) Watch(daemon.WatchSpec) error  { return nil }
-func (m *memDaemon) Unwatch(token string) error    { return nil }
+func (m *memDaemon) EnsureRunning() error { m.running = true; return nil }
+func (m *memDaemon) Watch(spec daemon.WatchSpec) error {
+	m.watches = append(m.watches, spec)
+	return nil
+}
+func (m *memDaemon) Unwatch(token string) error { return nil }
 func TestProxySubmitReturnsPendingRequest(t *testing.T) {
 	srv := newApprovalServer(t, 1000)
 	pc := NewHTTPProxyClient(srv.URL, newMemDaemon(), 3600)
@@ -165,9 +172,12 @@ func TestProxyStatusWaitLongPoll(t *testing.T) {
 	}
 }
 
-func TestProxyHybridWaitYieldsPending(t *testing.T) {
-	srv := newApprovalServer(t, 1000)
-	pc := NewHTTPProxyClient(srv.URL, newMemDaemon(), 3600).(*httpProxyClient)
+func TestProxyHybridWaitRegistersReadWatcher(t *testing.T) {
+	t.Setenv("PASEO_AGENT_ID", "agent-test")
+	srv := newApprovalServer(t, 1_000_000_000)
+	dc := newMemDaemon()
+	stateDir := t.TempDir()
+	pc := NewHTTPProxyClient(srv.URL, dc, 3600, stateDir).(*httpProxyClient)
 	pc.syncWait = 50 * time.Millisecond
 	pc.pollInterval = 10 * time.Millisecond
 	pc.pollTimeout = 5 * time.Second
@@ -183,6 +193,49 @@ func TestProxyHybridWaitYieldsPending(t *testing.T) {
 		t.Fatalf("expected token tok123, got %q", result.Token)
 	}
 	if result.Resume == "" {
-		t.Fatal("expected non-empty resume command")
+		t.Fatal("pending request did not expose a recorded resume command")
+	}
+	ledger, err := requeststate.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok, err := ledger.Get("tok123")
+	if err != nil || !ok || entry.Operation != "read" {
+		t.Fatalf("ledger entry = %+v, ok=%v, err=%v", entry, ok, err)
+	}
+	if len(dc.watches) != 1 {
+		t.Fatalf("watch count = %d, want 1", len(dc.watches))
+	}
+	if dc.watches[0].Token != "tok123" || dc.watches[0].IsMutation {
+		t.Fatalf("read watch = %+v", dc.watches[0])
+	}
+	if activation := dc.watches[0].Activation; activation == nil || activation.PaseoAgentID != "agent-test" {
+		t.Fatalf("read activation = %+v", activation)
+	}
+}
+
+func TestProxyHybridWaitRegistersMutationWatcher(t *testing.T) {
+	t.Setenv("PASEO_AGENT_ID", "agent-test")
+	srv := newApprovalServer(t, 1_000_000_000)
+	dc := newMemDaemon()
+	pc := NewHTTPProxyClient(srv.URL, dc, 3600).(*httpProxyClient)
+	pc.syncWait = 50 * time.Millisecond
+	pc.pollTimeout = 5 * time.Second
+
+	result, err := pc.Write(context.Background(), "ci-token", "Infra", "rotate", "update", "", map[string]string{"credential": "replacement"}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pending" {
+		t.Fatalf("status = %q, want pending", result.Status)
+	}
+	if len(dc.watches) != 1 {
+		t.Fatalf("watch count = %d, want 1", len(dc.watches))
+	}
+	if watch := dc.watches[0]; watch.Token != "tok123" || !watch.IsMutation {
+		t.Fatalf("mutation watch = %+v", watch)
+	}
+	if activation := dc.watches[0].Activation; activation == nil || activation.PaseoAgentID != "agent-test" {
+		t.Fatalf("mutation activation = %+v", activation)
 	}
 }

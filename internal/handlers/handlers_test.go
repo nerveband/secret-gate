@@ -34,6 +34,7 @@ func TestNormalizeRequesterIP(t *testing.T) {
 }
 
 func TestHandleSecretAppliesApprovedMutation(t *testing.T) {
+	connectWrites := 0
 	connect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/vaults":
@@ -42,6 +43,7 @@ func TestHandleSecretAppliesApprovedMutation(t *testing.T) {
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %s", r.Method)
 			}
+			connectWrites++
 			var item opconnect.Item
 			if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
 				t.Fatal(err)
@@ -71,8 +73,17 @@ func TestHandleSecretAppliesApprovedMutation(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if _, err := requests.GetByToken(req.Token); err != store.ErrNotFound {
-		t.Fatalf("request token remained after write: %v", err)
+	stored, err := requests.GetByToken(req.Token)
+	if err != nil || stored.MutationState != "completed" {
+		t.Fatalf("stored mutation = %+v, err=%v", stored, err)
+	}
+	replay := httptest.NewRecorder()
+	h.HandleSecret(replay, httptest.NewRequest(http.MethodGet, "/secret/"+req.Token, nil))
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, body = %s", replay.Code, replay.Body.String())
+	}
+	if connectWrites != 1 {
+		t.Fatalf("Connect writes = %d, want 1", connectWrites)
 	}
 }
 
