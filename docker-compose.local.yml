@@ -1,38 +1,88 @@
+name: secret-gate
+
 services:
   op-connect-api:
-    image: 1password/connect-api:latest
-    ports:
-      - "127.0.0.1:18081:8080"
+    image: 1password/connect-api@sha256:e915c0c843972f02b0e7e2de502bda8bd4a092288b3f1866098a857bd715a281
     volumes:
-      - ./1password-credentials.json:/home/opuser/.op/1password-credentials.json:ro
+      - ${OP_CONNECT_CREDENTIALS_FILE:-./1password-credentials.json}:/home/opuser/.op/1password-credentials.json:ro
       - op-connect-data:/home/opuser/.op/data
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 1.0
 
   op-connect-sync:
-    image: 1password/connect-sync:latest
+    image: 1password/connect-sync@sha256:6297ca6136c0f0fb096bc64c49e1bc8df2aab35282ebff8c7bb60745ef176d0d
     volumes:
-      - ./1password-credentials.json:/home/opuser/.op/1password-credentials.json:ro
+      - ${OP_CONNECT_CREDENTIALS_FILE:-./1password-credentials.json}:/home/opuser/.op/1password-credentials.json:ro
       - op-connect-data:/home/opuser/.op/data
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 1.0
 
   secret-gate:
+    build:
+      context: .
+      args:
+        TARGETARCH: amd64
+        TARGETOS: linux
     depends_on:
-      - op-connect-api
-      - op-connect-sync
-    build: .
+      op-connect-api:
+        condition: service_started
+      op-connect-sync:
+        condition: service_started
     ports:
       - "127.0.0.1:18080:8080"
+    env_file:
+      - ${SECRET_GATE_ENV_FILE:-.env}
     environment:
       PORT: "8080"
       OP_CONNECT_HOST: "http://op-connect-api:8080"
-      OP_CONNECT_TOKEN: "${OP_CONNECT_TOKEN}"
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
       WEBHOOK_BASE_URL: "${WEBHOOK_BASE_URL:-http://127.0.0.1:18080}"
       REQUEST_TTL: "${REQUEST_TTL:-15m}"
       CLEANUP_INTERVAL: "${CLEANUP_INTERVAL:-5m}"
       AUTO_APPROVE_TTL: "${AUTO_APPROVE_TTL:-30m}"
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   op-connect-data:
