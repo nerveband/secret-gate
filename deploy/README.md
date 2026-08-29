@@ -1,7 +1,8 @@
 # DevBox release deployment
 
 The systemd timer deploys the highest `vMAJOR.MINOR.PATCH` tag reachable from
-`origin/main`. The root-owned helper clones the hard-coded GitHub origin into
+`origin/main`. The root-owned helper uses the existing DevBox GitHub CLI login
+to clone the private, hard-coded GitHub origin into
 `/var/lib/secret-gate-release`, archives the verified tag there, and runs
 `docker-compose.local.yml`. Runtime credentials remain in their existing
 mode-restricted files outside the repository. Published ports stay bound to
