@@ -13,6 +13,7 @@ import (
 	"github.com/johnuopini/secret-gate/internal/core"
 	"github.com/johnuopini/secret-gate/internal/daemon"
 )
+
 // --- Mock implementations ---
 
 type mockDaemonClient struct {
@@ -818,11 +819,12 @@ func TestHandleSSHWithSecret_FallsBackToIdentityFile(t *testing.T) {
 func TestMCPTypesAreCoreAliases(t *testing.T) {
 	var _ core.ProxyClient = ProxyClient(nil)
 	var _ core.FullDaemonClient = FullDaemonClient(nil)
-	var rc RequestContext = core.RequestContext{Agent: "Codex"}
-	if rc.Agent != "Codex" {
+	var rc RequestContext = core.RequestContext{Runtime: "Paseo", Provider: "Oh My Pi"}
+	if rc.Runtime != "Paseo" || rc.Provider != "Oh My Pi" {
 		t.Fatal("RequestContext is not aliased to core.RequestContext")
 	}
 }
+
 // --- Server construction test ---
 
 func TestNew_CreatesServer(t *testing.T) {

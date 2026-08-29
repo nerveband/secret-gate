@@ -247,3 +247,45 @@ func TestClaimMutationAllowsOneConcurrentExecutor(t *testing.T) {
 		t.Fatalf("claimed executors = %d, want 1", claimed)
 	}
 }
+
+func TestSaveOrRenewEquivalentPendingRequest(t *testing.T) {
+	requests := store.New()
+	first := &models.ApprovalRequest{
+		ID: "first", Token: "token-first", Fingerprint: "same",
+		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
+		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "same-value"}},
+	}
+	if _, reused, err := requests.SaveOrRenew(first, time.Minute); err != nil || reused {
+		t.Fatalf("first save: reused=%v err=%v", reused, err)
+	}
+	second := &models.ApprovalRequest{
+		ID: "second", Token: "token-second", Fingerprint: "same",
+		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
+		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "same-value"}},
+	}
+	got, reused, err := requests.SaveOrRenew(second, 2*time.Minute)
+	if err != nil || !reused {
+		t.Fatalf("renew: reused=%v err=%v", reused, err)
+	}
+	if got.Token != first.Token || got.ReminderCount != 1 || requests.Count() != 1 {
+		t.Fatalf("renewed request = %#v, count=%d", got, requests.Count())
+	}
+}
+func TestSaveOrRenewDoesNotMergeDifferentMutationValues(t *testing.T) {
+	requests := store.New()
+	first := &models.ApprovalRequest{
+		ID: "first", Token: "token-first", Fingerprint: "same",
+		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
+		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "first"}},
+	}
+	_, _, _ = requests.SaveOrRenew(first, time.Minute)
+	second := &models.ApprovalRequest{
+		ID: "second", Token: "token-second", Fingerprint: "same",
+		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
+		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "second"}},
+	}
+	got, reused, err := requests.SaveOrRenew(second, time.Minute)
+	if err != nil || reused || got.Token != second.Token || requests.Count() != 2 {
+		t.Fatalf("second request = %#v, reused=%v err=%v count=%d", got, reused, err, requests.Count())
+	}
+}

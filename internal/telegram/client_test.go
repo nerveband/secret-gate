@@ -35,7 +35,7 @@ func TestSendApprovalRequestIncludesAutoApproveButton(t *testing.T) {
 		RequesterIP:      "10.0.0.5",
 		ExpiresAt:        time.Now().Add(15 * time.Minute),
 		Action:           "read",
-		Context:          models.RequestContext{Agent: "Codex", Model: "gpt-5.6-luna", Think: "low", Project: "ts-project", Task: "they are testing the deployment"},
+		Context:          models.RequestContext{Runtime: "Paseo", Provider: "Oh My Pi", Model: "gpt-5.6-sol", Think: "high", Project: "ts-project", Task: "test the deployment"},
 		Secrets:          []models.SecretRequest{{SecretName: "deploy-key", Vault: "AI Agents", Fields: []string{"username", "password"}}},
 	}
 
@@ -56,7 +56,7 @@ func TestSendApprovalRequestIncludesAutoApproveButton(t *testing.T) {
 	if sent.ParseMode != "HTML" {
 		t.Fatalf("parse mode = %q, want HTML", sent.ParseMode)
 	}
-	for _, want := range []string{"<b>gpt-5.6-luna (low think)</b>", "<b>ts-project</b>", "username, password", "because they are testing the deployment", "Do you approve this request?"} {
+	for _, want := range []string{"🔐 1Password access request", "Reason:\n<b>test the deployment</b>", "Runtime: Paseo\nProvider: Oh My Pi\nModel: gpt-5.6-sol\nThinking: high\nProject: ts-project", "Read username, password", "Expires:", "Request: <code>request-id</code>"} {
 		if !strings.Contains(sent.Text, want) {
 			t.Errorf("message missing %q:\n%s", want, sent.Text)
 		}
@@ -105,11 +105,11 @@ func TestDecisionMessagesPreserveNarrativeAndReason(t *testing.T) {
 	defer server.Close()
 	client := New("token", 456)
 	client.baseURL = server.URL
-	req := &models.ApprovalRequest{ID: "id", SecretName: "account", Vault: "Agents", RequesterMachine: "devbox", Reason: "deploy the corrected server", Action: "read", Context: models.RequestContext{Agent: "Codex", Model: "gpt-5.6", Project: "secret-gate"}, Secrets: []models.SecretRequest{{SecretName: "account", Vault: "Agents", Fields: []string{"password"}}}}
+	req := &models.ApprovalRequest{ID: "id", SecretName: "account", Vault: "Agents", RequesterMachine: "devbox", Reason: "deploy the corrected server", Action: "read", Context: models.RequestContext{Runtime: "Paseo", Provider: "Oh My Pi", Model: "gpt-5.6", Project: "secret-gate"}, Secrets: []models.SecretRequest{{SecretName: "account", Vault: "Agents", Fields: []string{"password"}}}}
 	if err := client.UpdateMessageApproved(123, req, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>Approved</b>", "<b>gpt-5.6</b>", "password", "because deploy the corrected server", "@owner"} {
+	for _, want := range []string{"✅ Approved: deploy the corrected server", "Oh My Pi may read password", "Reason:\n<b>deploy the corrected server</b>", "Approved by: @owner"} {
 		if !strings.Contains(edited.Text, want) {
 			t.Errorf("approved message missing %q: %s", want, edited.Text)
 		}
@@ -120,12 +120,59 @@ func TestDecisionMessagesPreserveNarrativeAndReason(t *testing.T) {
 	if err := client.SendAutoApprovedNotification(req, "owner", time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>Auto-approved</b>", "password", "because deploy the corrected server", "@owner"} {
+	for _, want := range []string{"✅ Approved: deploy the corrected server", "Oh My Pi may read password", "Reason:\n<b>deploy the corrected server</b>", "Approved by: @owner"} {
 		if !strings.Contains(sent.Text, want) {
 			t.Errorf("auto-approved message missing %q: %s", want, sent.Text)
 		}
 	}
 	if sent.ParseMode != "HTML" {
 		t.Fatalf("auto-approved parse mode = %q", sent.ParseMode)
+	}
+}
+
+func TestMessagesBoldOnlyReasonAndKeepIdentityOrder(t *testing.T) {
+	now := time.Date(2026, 8, 28, 15, 27, 0, 0, time.FixedZone("EDT", -4*60*60))
+	reminded := now.Add(5 * time.Minute)
+	req := &models.ApprovalRequest{
+		ID: "request-id", SecretName: "Deploy key", Vault: "AI Agents",
+		Reason: "Deploy <release> safely.", Action: "read",
+		RequestedAt: now, ExpiresAt: now.Add(15 * time.Minute),
+		LastRemindedAt: &reminded, ReminderCount: 2,
+		Context: models.RequestContext{
+			Runtime: "Paseo", Provider: "Oh My Pi", Model: "gpt-5.6-sol",
+			Think: "high", Project: "secret-gate", Task: "Deploy Secret Gate.",
+		},
+		Secrets: []models.SecretRequest{{SecretName: "Deploy key", Vault: "AI Agents", Fields: []string{"password"}}},
+	}
+	message := approvalMessage(req)
+	if strings.Count(message, "<b>") != 1 || !strings.Contains(message, "<b>Deploy &lt;release&gt; safely.</b>") {
+		t.Fatalf("bold formatting = %q", message)
+	}
+	order := []string{"Runtime: Paseo", "Provider: Oh My Pi", "Model: gpt-5.6-sol", "Thinking: high", "Project: secret-gate"}
+	last := -1
+	for _, part := range order {
+		index := strings.Index(message, part)
+		if index <= last {
+			t.Fatalf("identity order in %q", message)
+		}
+		last = index
+	}
+	if got := reminderMessage(req); !strings.HasPrefix(got, "⏰ Approval reminder") || strings.Count(got, "<b>") != 1 {
+		t.Fatalf("reminder = %q", got)
+	}
+	if got := blockedWriteMessage(req, "The token has read-only access."); !strings.HasPrefix(got, "⛔ Write request blocked") || strings.Count(got, "<b>") != 1 {
+		t.Fatalf("blocked = %q", got)
+	}
+}
+
+func TestPurposeSuffixIsDeterministicAndUnicodeSafe(t *testing.T) {
+	req := &models.ApprovalRequest{Context: models.RequestContext{Task: "  Déployer   le service.  "}}
+	if got := purposeSuffix(req); got != "déployer le service" {
+		t.Fatalf("purpose = %q", got)
+	}
+	req.Context.Task = strings.Repeat("界", 80)
+	got := purposeSuffix(req)
+	if runes := []rune(got); len(runes) != 72 || runes[71] != '…' {
+		t.Fatalf("truncated purpose has %d runes: %q", len([]rune(got)), got)
 	}
 }

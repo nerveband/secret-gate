@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/johnuopini/secret-gate/internal/logger"
 	"github.com/johnuopini/secret-gate/internal/models"
@@ -159,38 +160,150 @@ func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL
 }
 
 func approvalMessage(req *models.ApprovalRequest) string {
-	return "🔐 <b>1Password request</b>\n\n" + requestNarrative(req) +
-		"\n\nDo you approve this request?\n\nExpires " + req.ExpiresAt.Format("15:04 MST") + " · ID <code>" + html.EscapeString(req.ID) + "</code>"
+	var b strings.Builder
+	b.WriteString("🔐 1Password access request\n\nAction:\n")
+	b.WriteString(actionDescription(req))
+	writeReason(&b, req)
+	writeRequester(&b, req)
+	b.WriteString("\n\nExpires: ")
+	b.WriteString(req.ExpiresAt.Format("15:04 MST"))
+	b.WriteString("\nRequest: <code>")
+	b.WriteString(html.EscapeString(req.ID))
+	b.WriteString("</code>")
+	if req.ReminderCount > 0 {
+		fmt.Fprintf(&b, "\nReminders: %d", req.ReminderCount)
+	}
+	return b.String()
 }
 
-func requestNarrative(req *models.ApprovalRequest) string {
-	esc := html.EscapeString
-	agent := defaultIfEmpty(req.Context.Agent, req.RequesterMachine)
-	model := defaultIfEmpty(req.Context.Model, "an agent")
-	if req.Context.Think != "" {
-		model += " (" + req.Context.Think + " think)"
+func reminderMessage(req *models.ApprovalRequest) string {
+	var b strings.Builder
+	b.WriteString("⏰ Approval reminder\n\nStill waiting for approval to ")
+	b.WriteString(strings.ToLower(actionSummary(req)))
+	b.WriteString(".")
+	writeReason(&b, req)
+	writeRequester(&b, req)
+	b.WriteString("\n\nOriginally requested: ")
+	b.WriteString(req.RequestedAt.Format("15:04 MST"))
+	b.WriteString("\nReminded: ")
+	remindedAt := firstTime(req.LastRemindedAt, req.RequestedAt)
+	b.WriteString(remindedAt.Format("15:04 MST"))
+	fmt.Fprintf(&b, "\nReminder: %d", req.ReminderCount)
+	return b.String()
+}
+
+func approvedMessage(req *models.ApprovalRequest, approver, scope string) string {
+	requester := firstNonEmpty(req.Context.Provider, req.Context.Runtime, req.RequesterMachine, "The requester")
+	return "✅ Approved: " + purposeSuffix(req) + "\n\n" +
+		html.EscapeString(requester) + " may " + strings.ToLower(actionSummary(req)) + " for the " +
+		html.EscapeString(firstNonEmpty(req.Context.Project, "unspecified")) + " project." +
+		reasonBlock(req) + "\n\nApproved by: @" + html.EscapeString(approver) +
+		"\nScope: " + html.EscapeString(scope) + "\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func deniedMessage(req *models.ApprovalRequest, denier string) string {
+	return "❌ Denied: " + purposeSuffix(req) + reasonBlock(req) +
+		"\n\nDenied by: @" + html.EscapeString(denier) +
+		"\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func blockedWriteMessage(req *models.ApprovalRequest, detail string) string {
+	return "⛔ Write request blocked\n\nCannot " + strings.ToLower(actionDescription(req)) + ".\n" +
+		html.EscapeString(detail) + reasonBlock(req) + requesterBlock(req)
+}
+
+func actionDescription(req *models.ApprovalRequest) string {
+	description := actionSummary(req)
+	if firstNonEmpty(req.Action, "read") == "read" {
+		description += "\nVault: " + html.EscapeString(req.Vault)
 	}
-	project := defaultIfEmpty(req.Context.Project, "an unspecified project")
-	action := defaultIfEmpty(req.Action, "read")
-	var wants []string
-	for _, s := range req.Secrets {
+	return description
+}
+
+func actionSummary(req *models.ApprovalRequest) string {
+	action := firstNonEmpty(req.Action, "read")
+	name := firstNonEmpty(req.SecretName, "item")
+	if len(req.Secrets) > 0 {
+		name = req.Secrets[0].SecretName
+	}
+	switch action {
+	case "create":
+		return "Create \"" + html.EscapeString(name) + "\" in the \"" + html.EscapeString(req.Vault) + "\" vault"
+	case "update":
+		return "Update \"" + html.EscapeString(name) + "\" in the \"" + html.EscapeString(req.Vault) + "\" vault"
+	default:
 		fields := "all fields"
-		if len(s.Fields) > 0 {
-			fields = strings.Join(s.Fields, ", ")
+		if len(req.Secrets) > 0 && len(req.Secrets[0].Fields) > 0 {
+			fields = strings.Join(req.Secrets[0].Fields, ", ")
 		}
-		vault := defaultIfEmpty(s.Vault, "an automatically selected vault")
-		wants = append(wants, fmt.Sprintf("<b>%s</b> from <b>%s</b> (%s)", esc(s.SecretName), esc(vault), esc(fields)))
+		return "Read " + html.EscapeString(fields) + " from \"" + html.EscapeString(name) + "\""
 	}
-	if len(wants) == 0 {
-		wants = []string{fmt.Sprintf("<b>%s</b> from <b>%s</b>", esc(req.SecretName), esc(req.Vault))}
+}
+
+func writeReason(b *strings.Builder, req *models.ApprovalRequest) {
+	b.WriteString(reasonBlock(req))
+}
+
+func reasonBlock(req *models.ApprovalRequest) string {
+	reason := firstNonEmpty(req.Reason, req.Context.Task, "No reason provided.")
+	return "\n\nReason:\n<b>" + html.EscapeString(reason) + "</b>"
+}
+
+func writeRequester(b *strings.Builder, req *models.ApprovalRequest) {
+	b.WriteString(requesterBlock(req))
+}
+
+func requesterBlock(req *models.ApprovalRequest) string {
+	values := [][2]string{
+		{"Runtime", req.Context.Runtime},
+		{"Provider", req.Context.Provider},
+		{"Model", req.Context.Model},
+		{"Thinking", req.Context.Think},
+		{"Project", req.Context.Project},
 	}
-	purpose := defaultIfEmpty(req.Context.Task, req.Reason)
-	purpose = defaultIfEmpty(purpose, "No reason was provided.")
-	return fmt.Sprintf(
-		"<b>%s</b>, using <b>%s</b>, is working in <b>%s</b> and wants to <b>%s</b>:\n%s\n\n"+
-			"They need it because %s",
-		esc(agent), esc(model), esc(project), esc(action), "• "+strings.Join(wants, "\n• "),
-		esc(purpose))
+	var lines []string
+	for _, value := range values {
+		if value[1] != "" {
+			lines = append(lines, value[0]+": "+html.EscapeString(value[1]))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n\nRequested by:\n" + strings.Join(lines, "\n")
+}
+
+func purposeSuffix(req *models.ApprovalRequest) string {
+	text := firstNonEmpty(req.Context.Task, req.Reason, req.Action, "request")
+	text = strings.Join(strings.Fields(text), " ")
+	text = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(text, "."), "!"), "?")
+	runes := []rune(text)
+	for i, r := range runes {
+		if unicode.IsLetter(r) {
+			runes[i] = unicode.ToLower(r)
+			break
+		}
+	}
+	if len(runes) > 72 {
+		runes = append(runes[:71], '…')
+	}
+	return html.EscapeString(string(runes))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstTime(value *time.Time, fallback time.Time) time.Time {
+	if value != nil {
+		return *value
+	}
+	return fallback
 }
 
 func formatDurationLabel(d time.Duration) string {
@@ -208,9 +321,7 @@ func formatDurationLabel(d time.Duration) string {
 
 // SendAutoApprovedNotification sends an audit message for a request covered by an approval session.
 func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error {
-	text := "✅ <b>Auto-approved</b>\n\n" + requestNarrative(req) +
-		"\n\nApproved by the window opened by <b>@" + html.EscapeString(approver) + "</b>." +
-		" The window expires at " + expiresAt.Format("15:04 MST") + ".\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
+	text := approvedMessage(req, approver, "Until "+expiresAt.Format("15:04 MST"))
 
 	msgReq := SendMessageRequest{
 		ChatID:    c.chatID,
@@ -248,18 +359,57 @@ func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, appro
 
 // UpdateMessageApproved updates a message to show it was approved
 func (c *Client) UpdateMessageApproved(messageID int, req *models.ApprovalRequest, approver string) error {
-	text := "✅ <b>Approved</b>\n\n" + requestNarrative(req) +
-		"\n\nApproved by <b>@" + html.EscapeString(approver) + "</b>.\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
-
-	return c.editMessage(messageID, text, nil)
+	return c.editMessage(messageID, approvedMessage(req, approver, "One use"), nil)
 }
 
 // UpdateMessageDenied updates a message to show it was denied
 func (c *Client) UpdateMessageDenied(messageID int, req *models.ApprovalRequest, denier string) error {
-	text := "❌ <b>Denied</b>\n\n" + requestNarrative(req) +
-		"\n\nDenied by <b>@" + html.EscapeString(denier) + "</b>.\n\nID <code>" + html.EscapeString(req.ID) + "</code>"
+	return c.editMessage(messageID, deniedMessage(req, denier), nil)
+}
 
-	return c.editMessage(messageID, text, nil)
+// UpdateApprovalRequest refreshes the original actionable request after renewal.
+func (c *Client) UpdateApprovalRequest(messageID int, req *models.ApprovalRequest, autoApproveTTL time.Duration) error {
+	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: fmt.Sprintf("approve:%s", req.ID)}}
+	if req.Mutation == nil {
+		approveRow = append(approveRow, InlineKeyboardButton{Text: fmt.Sprintf("✅ Approve %s", formatDurationLabel(autoApproveTTL)), CallbackData: fmt.Sprintf("approve_window:%s", req.ID)})
+	}
+	keyboard := &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)}}}}
+	return c.editMessage(messageID, approvalMessage(req), keyboard)
+}
+
+// SendApprovalReminder sends a compact reminder for an existing request.
+func (c *Client) SendApprovalReminder(req *models.ApprovalRequest) error {
+	return c.sendText(reminderMessage(req))
+}
+
+// SendWriteBlocked sends an audit warning without approval buttons.
+func (c *Client) SendWriteBlocked(req *models.ApprovalRequest, detail string) error {
+	return c.sendText(blockedWriteMessage(req, detail))
+}
+
+func (c *Client) sendText(text string) error {
+	msgReq := SendMessageRequest{ChatID: c.chatID, Text: text, ParseMode: "HTML"}
+	body, err := json.Marshal(msgReq)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("sending message: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+	var apiResp APIResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+	if !apiResp.OK {
+		return fmt.Errorf("telegram API error: %s", apiResp.Description)
+	}
+	return nil
 }
 
 // AnswerCallbackQuery answers a callback query (removes loading state from button)
@@ -427,11 +577,4 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 	}
 
 	return nil
-}
-
-func defaultIfEmpty(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }

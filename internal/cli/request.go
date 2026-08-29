@@ -169,12 +169,13 @@ func (a *App) requestSubmit(args []string) int {
 				"resume with: secret-gate request wait "+pending.Token)
 		}
 		return a.ok(command, map[string]interface{}{
-			"token":      pending.Token,
-			"status_url": pending.StatusURL,
-			"expires_at": pending.ExpiresAt,
-			"state":      "pending",
-			"resume":     "secret-gate request wait " + pending.Token,
-			"check":      "secret-gate request status " + pending.Token,
+			"token":          pending.Token,
+			"status_url":     pending.StatusURL,
+			"expires_at":     pending.ExpiresAt,
+			"state":          "pending",
+			"request_reused": pending.RequestReused,
+			"resume":         "secret-gate request wait " + pending.Token,
+			"check":          "secret-gate request status " + pending.Token,
 		}, &Meta{Visibility: VisibilityMetadataOnly})
 	}
 	return a.waitForApproval(command, entry, *timeout, *pollInterval)

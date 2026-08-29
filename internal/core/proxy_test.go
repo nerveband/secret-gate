@@ -239,3 +239,25 @@ func TestProxyHybridWaitRegistersMutationWatcher(t *testing.T) {
 		t.Fatalf("mutation activation = %+v", activation)
 	}
 }
+
+func TestEnrichRequestContextUsesPaseoIdentityWithoutCodexFallback(t *testing.T) {
+	t.Setenv("PASEO_AGENT_ID", "agent-test")
+	t.Setenv("PASEO_AGENT_PROVIDER", "Oh My Pi")
+	got := enrichRequestContext(RequestContext{}, "devbox", "deploy release")
+	if got.Runtime != "Paseo" || got.Provider != "Oh My Pi" || got.PaseoAgentID != "agent-test" {
+		t.Fatalf("context = %#v", got)
+	}
+	if got.Task != "deploy release" || got.Project == "" {
+		t.Fatalf("context defaults = %#v", got)
+	}
+}
+
+func TestEnrichRequestContextPreservesExplicitIdentity(t *testing.T) {
+	t.Setenv("PASEO_AGENT_ID", "agent-env")
+	t.Setenv("PASEO_AGENT_PROVIDER", "env-provider")
+	input := RequestContext{Runtime: "custom-runtime", Provider: "custom-provider", PaseoAgentID: "agent-explicit"}
+	got := enrichRequestContext(input, "devbox", "task")
+	if got.Runtime != input.Runtime || got.Provider != input.Provider || got.PaseoAgentID != input.PaseoAgentID {
+		t.Fatalf("context = %#v", got)
+	}
+}

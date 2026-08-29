@@ -166,6 +166,22 @@ Pending approvals are recorded in `requests.json` under the client state directo
 
 Tracked requests move monotonically from `pending` to `approved` (read), `completed` (write), `denied`, `expired`, `failed`, or `cancelled`. Concurrent client and daemon updates are serialized with a process-shared file lock and crash-durable atomic writes.
 
+Equivalent pending requests reuse the original request ID and token, extend
+its expiry, and send a compact Telegram reminder. The response includes
+`request_reused: true`; Secret Gate never creates a second actionable
+approval for the same operation, resolved vault, fields, reason, and
+requester context.
+
+Approver context is displayed as runtime, provider, model, thinking level,
+and project. MCP callers can pass these fields directly. CLI callers can
+set `SECRET_GATE_RUNTIME`, `SECRET_GATE_PROVIDER`, `SECRET_GATE_MODEL`, and
+`SECRET_GATE_THINK`; explicit request context takes precedence.
+
+Write requests are checked against the target vault before approval. If
+Connect reports read-only access, or write access cannot be verified
+without mutation, Secret Gate rejects the request and sends a Telegram
+audit warning with no approval buttons.
+
 Managed SSH commands use an isolated OpenSSH configuration (`-F /dev/null`) with explicit host, port, identity, batch mode, and host-key options. User-level `Include`, `ProxyJump`, and host aliases are intentionally not applied; pass the concrete destination to `--host`.
 
 ### From the server

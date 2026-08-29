@@ -1,6 +1,7 @@
 package opconnect
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -93,6 +94,57 @@ func (c *Client) GetVaults() ([]Vault, error) {
 	}
 
 	return vaults, nil
+}
+
+// CapabilityResult describes whether Connect can perform an operation.
+type CapabilityResult struct {
+	Allowed bool
+	Code    string
+	Message string
+}
+
+// ResolveVault resolves a vault name or ID within the token's visible scope.
+func (c *Client) ResolveVault(name string) (Vault, error) {
+	vaults, err := c.GetVaults()
+	if err != nil {
+		return Vault{}, err
+	}
+	for _, vault := range vaults {
+		if vault.Name == name || vault.ID == name {
+			return vault, nil
+		}
+	}
+	return Vault{}, fmt.Errorf("vault not found: %s", name)
+}
+
+// CheckWriteCapability verifies write authorization without creating an item.
+// Connect checks vault authorization before rejecting the intentionally invalid
+// empty item document. A 400 response therefore proves the write authorization
+// check passed; every ambiguous response fails closed.
+func (c *Client) CheckWriteCapability(vaultName string) CapabilityResult {
+	vault, err := c.ResolveVault(vaultName)
+	if err != nil {
+		return CapabilityResult{Code: "write_capability_unverified", Message: "Could not verify access to the target vault."}
+	}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/vaults/%s/items", c.baseURL, vault.ID), bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return CapabilityResult{Code: "write_capability_unverified", Message: "Could not build the Connect capability check."}
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return CapabilityResult{Code: "write_capability_unverified", Message: "1Password Connect could not be reached to verify write access."}
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusBadRequest:
+		return CapabilityResult{Allowed: true}
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return CapabilityResult{Code: "vault_write_unavailable", Message: "The configured 1Password Connect token has read-only access."}
+	default:
+		return CapabilityResult{Code: "write_capability_unverified", Message: fmt.Sprintf("1Password Connect returned status %d while checking write access.", resp.StatusCode)}
+	}
 }
 
 // GetItemByTitle fetches an item by vault ID and item title

@@ -196,8 +196,10 @@ func (a *App) runAgentContext() int {
 		Env: map[string]string{
 			"SECRET_GATE_URL":       "server base URL (or ~/.config/secret-gate/config.json)",
 			"SECRET_GATE_STATE_DIR": "request ledger dir (default ~/.local/state/secret-gate)",
-			"SECRET_GATE_AGENT":     "agent name shown to the approver",
+			"SECRET_GATE_RUNTIME":   "requesting runtime shown to the approver",
+			"SECRET_GATE_PROVIDER":  "agent provider shown to the approver",
 			"SECRET_GATE_MODEL":     "model name shown to the approver",
+			"SECRET_GATE_THINK":     "thinking level shown to the approver",
 		},
 		ExitCodes: ExitCodeTable(),
 		VisibilityClasses: map[string]string{

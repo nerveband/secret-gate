@@ -15,6 +15,25 @@ point at the server. Run `secret-gate agent-context --json` first in a
 new environment — it returns the workflow, exit codes, and visibility
 classes. `secret-gate schema` returns the full command manifest.
 
+Include explicit approver context when the interface supports it:
+
+```json
+{
+  "runtime": "Paseo",
+  "provider": "Oh My Pi",
+  "model": "gpt-5.6-sol",
+  "think": "high",
+  "project": "secret-gate",
+  "task": "deploy the release"
+}
+```
+
+Use runtime, provider, model, thinking level, and project in that order.
+Do not label the requester `Codex` unless Codex is the actual runtime or
+provider. Repeating an equivalent pending request renews the original
+request and returns `request_reused: true`; it does not create another
+approval.
+
 ## Exit codes
 
 `0` ok · `1` internal/child failure (see `data.exit_code`) · `2` usage ·
@@ -72,7 +91,12 @@ echo '{"category":"API_CREDENTIAL","fields":{"credential":"<value>"}}' \
 ```
 
 Writes always need one-request approval and an explicit `--vault`.
-Preview with `--dry-run` (labels only). Never put values in the reason.
+Before creating an approval, Secret Gate verifies that the configured
+1Password Connect token can write to that vault. An unavailable or
+unverifiable capability returns `vault_write_unavailable` or
+`write_capability_unverified` and sends a Telegram audit warning without
+approval buttons. Preview with `--dry-run` (labels only). Never put values
+in the reason.
 
 ## Daemon
 

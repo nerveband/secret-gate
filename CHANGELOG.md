@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.0 — 2026-08-28
+
+### Added
+- Target-vault capability checks reject unavailable or unverifiable writes before Telegram approval.
+- Equivalent pending requests renew the original request and send one compact reminder instead of creating duplicate approvals.
+- Approver context identifies runtime, provider, model, thinking level, and project separately.
+
+### Changed
+- Telegram requests use fixed labels, one status emoji, and bold only the reason.
+- Approved and denied messages lead with a deterministic short purpose.
+
+### Fixed
+- Telegram delivery failures no longer leave an apparently submitted request with no actionable message.
+- CLI and MCP responses preserve structured write-capability errors and report `request_reused`.
+
 ## 0.4.1 — Instant Push, Hybrid Wait, and Agent Activation
 
 ### Added

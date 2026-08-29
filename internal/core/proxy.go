@@ -106,10 +106,11 @@ type mutationPayload struct {
 }
 
 type requestResponse struct {
-	Token     string `json:"token"`
-	StatusURL string `json:"status_url"`
-	ExpiresAt string `json:"expires_at"`
-	Message   string `json:"message"`
+	Token         string `json:"token"`
+	StatusURL     string `json:"status_url"`
+	ExpiresAt     string `json:"expires_at"`
+	Message       string `json:"message"`
+	RequestReused bool   `json:"request_reused,omitempty"`
 }
 
 type statusResponse struct {
@@ -180,9 +181,25 @@ func httpError(status int, body []byte) error {
 	}
 	var errResp errorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Message != "" {
-		return E(code, fmt.Sprintf("%s: %s", errResp.Error, errResp.Message), "")
+		switch errResp.Error {
+		case string(ErrVaultWriteUnavailable):
+			code = ErrVaultWriteUnavailable
+		case string(ErrWriteCapabilityUnknown):
+			code = ErrWriteCapabilityUnknown
+		}
+		return E(code, errResp.Message, capabilityHint(code))
 	}
 	return E(code, fmt.Sprintf("server returned status %d: %s", status, string(body)), "")
+}
+
+func capabilityHint(code ErrCode) string {
+	if code == ErrVaultWriteUnavailable {
+		return "grant the configured 1Password Connect token write access to the target vault, then retry"
+	}
+	if code == ErrWriteCapabilityUnknown {
+		return "restore 1Password Connect connectivity or configure verifiable write access, then retry"
+	}
+	return ""
 }
 
 // --- ProxyClient implementation ---
@@ -269,7 +286,7 @@ func (p *httpProxyClient) post(payload requestPayload) (*PendingRequest, error) 
 	if err := json.Unmarshal(respBody, &reqResp); err != nil {
 		return nil, E(ErrInternal, "parsing request response: "+err.Error(), "")
 	}
-	return &PendingRequest{Token: reqResp.Token, StatusURL: reqResp.StatusURL, ExpiresAt: reqResp.ExpiresAt}, nil
+	return &PendingRequest{Token: reqResp.Token, StatusURL: reqResp.StatusURL, ExpiresAt: reqResp.ExpiresAt, RequestReused: reqResp.RequestReused}, nil
 }
 
 func (p *httpProxyClient) Status(ctx context.Context, statusURL string) (*StatusResult, error) {
@@ -452,7 +469,8 @@ func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest,
 			}
 			result := &RequestResult{
 				Status: "pending", SecretName: secretName, Token: pending.Token, ExpiresAt: pending.ExpiresAt,
-				Message: "Approval pending on Telegram. The local watcher will finish the operation and notify this agent.",
+				RequestReused: pending.RequestReused,
+				Message:       "Approval pending on Telegram. The local watcher will finish the operation and notify this agent.",
 			}
 			if p.ledger != nil {
 				result.Resume = fmt.Sprintf("secret-gate request wait %s", pending.Token)
@@ -511,14 +529,17 @@ func (p *httpProxyClient) waitLoop(ctx context.Context, pending *PendingRequest,
 // enrichRequestContext fills approver-facing context from env and cwd
 // (moved verbatim from internal/mcpserver/proxy.go).
 func enrichRequestContext(requestContext RequestContext, hostname, reason string) RequestContext {
-	if requestContext.Agent == "" {
-		requestContext.Agent = firstEnv("SECRET_GATE_AGENT", "CODEX_AGENT_NAME")
-		if requestContext.Agent == "" {
-			requestContext.Agent = "Codex"
-		}
-	}
 	if requestContext.PaseoAgentID == "" {
 		requestContext.PaseoAgentID = firstEnv("PASEO_AGENT_ID", "SECRET_GATE_PASEO_AGENT_ID")
+	}
+	if requestContext.Runtime == "" {
+		requestContext.Runtime = firstEnv("SECRET_GATE_RUNTIME", "PASEO_RUNTIME")
+		if requestContext.Runtime == "" && requestContext.PaseoAgentID != "" {
+			requestContext.Runtime = "Paseo"
+		}
+	}
+	if requestContext.Provider == "" {
+		requestContext.Provider = firstEnv("SECRET_GATE_PROVIDER", "PASEO_PROVIDER", "PASEO_AGENT_PROVIDER", "OMP_PROVIDER")
 	}
 	if requestContext.Model == "" {
 		requestContext.Model = firstEnv("SECRET_GATE_MODEL", "OPENAI_MODEL", "CODEX_MODEL")

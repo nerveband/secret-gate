@@ -65,3 +65,47 @@ func TestNewFieldRecognizesOTPAndConcealedAliases(t *testing.T) {
 		t.Fatalf("api_key type = %s", field.Type)
 	}
 }
+
+func TestCheckWriteCapability(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		allowed    bool
+		code       string
+		wantMethod string
+	}{
+		{name: "writable", status: http.StatusBadRequest, allowed: true, wantMethod: http.MethodPost},
+		{name: "read only", status: http.StatusForbidden, code: "vault_write_unavailable", wantMethod: http.MethodPost},
+		{name: "invalid token", status: http.StatusUnauthorized, code: "vault_write_unavailable", wantMethod: http.MethodPost},
+		{name: "ambiguous response", status: http.StatusInternalServerError, code: "write_capability_unverified", wantMethod: http.MethodPost},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/vaults":
+					_ = json.NewEncoder(w).Encode([]Vault{{ID: "vault-id", Name: "AI Agents"}})
+				case "/v1/vaults/vault-id/items":
+					if r.Method != tt.wantMethod {
+						t.Fatalf("method = %s", r.Method)
+					}
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					if len(body) != 0 {
+						t.Fatalf("capability probe body = %#v", body)
+					}
+					w.WriteHeader(tt.status)
+				default:
+					t.Fatalf("unexpected path %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			got := New(server.URL, "test-token").CheckWriteCapability("AI Agents")
+			if got.Allowed != tt.allowed || got.Code != tt.code {
+				t.Fatalf("result = %#v", got)
+			}
+		})
+	}
+}

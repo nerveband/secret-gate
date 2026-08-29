@@ -87,7 +87,7 @@ func ExitCodeFor(code string) int {
 		return ExitDenied
 	case "expired", "timeout":
 		return ExitExpired
-	case "network", "server":
+	case "network", "server", "vault_write_unavailable", "write_capability_unverified":
 		return ExitNetwork
 	case "not_found", "not_cached":
 		return ExitNotFound

@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -21,18 +22,20 @@ const (
 
 // Store provides thread-safe storage for approval requests
 type Store struct {
-	mu       sync.RWMutex
-	requests map[string]*models.ApprovalRequest // keyed by token
-	byID     map[string]*models.ApprovalRequest // keyed by ID for Telegram callbacks
-	watchers map[string][]chan models.RequestStatus
+	mu            sync.RWMutex
+	requests      map[string]*models.ApprovalRequest // keyed by token
+	byID          map[string]*models.ApprovalRequest // keyed by ID for Telegram callbacks
+	byFingerprint map[string]*models.ApprovalRequest
+	watchers      map[string][]chan models.RequestStatus
 }
 
 // New creates a new Store
 func New() *Store {
 	return &Store{
-		requests: make(map[string]*models.ApprovalRequest),
-		byID:     make(map[string]*models.ApprovalRequest),
-		watchers: make(map[string][]chan models.RequestStatus),
+		requests:      make(map[string]*models.ApprovalRequest),
+		byID:          make(map[string]*models.ApprovalRequest),
+		byFingerprint: make(map[string]*models.ApprovalRequest),
+		watchers:      make(map[string][]chan models.RequestStatus),
 	}
 }
 
@@ -48,7 +51,43 @@ func (s *Store) Save(req *models.ApprovalRequest) error {
 	copy := *req
 	s.requests[req.Token] = &copy
 	s.byID[req.ID] = &copy
+	if req.Fingerprint != "" {
+		s.byFingerprint[req.Fingerprint] = &copy
+	}
 	return nil
+}
+
+// SaveOrRenew atomically stores a new request or renews an equivalent pending request.
+func (s *Store) SaveOrRenew(req *models.ApprovalRequest, ttl time.Duration) (*models.ApprovalRequest, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.byFingerprint[req.Fingerprint]; existing != nil {
+		if existing.Status == models.StatusPending && !existing.IsExpired() && mutationsEqual(existing.Mutation, req.Mutation) {
+			now := time.Now()
+			existing.ExpiresAt = now.Add(ttl)
+			existing.LastRemindedAt = &now
+			existing.ReminderCount++
+			copy := *existing
+			return &copy, true, nil
+		}
+	}
+	if _, exists := s.requests[req.Token]; exists {
+		return nil, false, ErrAlreadyExists
+	}
+	copy := *req
+	s.requests[req.Token] = &copy
+	s.byID[req.ID] = &copy
+	if req.Fingerprint != "" {
+		s.byFingerprint[req.Fingerprint] = &copy
+	}
+	return &copy, false, nil
+}
+
+func mutationsEqual(left, right *models.ItemMutation) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Operation == right.Operation && left.Category == right.Category && reflect.DeepEqual(left.Fields, right.Fields)
 }
 
 // GetByToken retrieves a request by its polling token
@@ -107,14 +146,15 @@ func (s *Store) Update(req *models.ApprovalRequest) error {
 func (s *Store) Delete(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	req, exists := s.requests[token]
 	if !exists {
 		return ErrNotFound
 	}
-
 	delete(s.requests, token)
 	delete(s.byID, req.ID)
+	if current := s.byFingerprint[req.Fingerprint]; current == req {
+		delete(s.byFingerprint, req.Fingerprint)
+	}
 	delete(s.watchers, token)
 	return nil
 }
@@ -198,6 +238,9 @@ func (s *Store) Cleanup() int {
 		if now.After(req.ExpiresAt.Add(time.Hour)) {
 			delete(s.requests, token)
 			delete(s.byID, req.ID)
+			if current := s.byFingerprint[req.Fingerprint]; current == req {
+				delete(s.byFingerprint, req.Fingerprint)
+			}
 			s.notifyWatchersLocked(token, models.StatusExpired)
 			removed++
 		}

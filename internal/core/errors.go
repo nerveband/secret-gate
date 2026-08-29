@@ -13,13 +13,15 @@ import (
 type ErrCode string
 
 const (
-	ErrValidation ErrCode = "validation"
-	ErrDenied     ErrCode = "denied"
-	ErrExpired    ErrCode = "expired"
-	ErrTimeout    ErrCode = "timeout"
-	ErrNetwork    ErrCode = "network"
-	ErrNotFound   ErrCode = "not_found"
-	ErrInternal   ErrCode = "internal"
+	ErrValidation             ErrCode = "validation"
+	ErrDenied                 ErrCode = "denied"
+	ErrExpired                ErrCode = "expired"
+	ErrTimeout                ErrCode = "timeout"
+	ErrNetwork                ErrCode = "network"
+	ErrNotFound               ErrCode = "not_found"
+	ErrInternal               ErrCode = "internal"
+	ErrVaultWriteUnavailable  ErrCode = "vault_write_unavailable"
+	ErrWriteCapabilityUnknown ErrCode = "write_capability_unverified"
 )
 
 // Error is a coded domain error with an agent-actionable hint.

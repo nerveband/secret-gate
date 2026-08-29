@@ -25,7 +25,8 @@ type SecretRequest struct {
 
 // RequestContext describes the agent and task in terms an approver can scan.
 type RequestContext struct {
-	Agent        string `json:"agent,omitempty"`
+	Runtime      string `json:"runtime,omitempty"`
+	Provider     string `json:"provider,omitempty"`
 	Model        string `json:"model,omitempty"`
 	Think        string `json:"think,omitempty"`
 	Project      string `json:"project,omitempty"`
@@ -59,6 +60,9 @@ type ApprovalRequest struct {
 	ExpiresAt         time.Time       `json:"expires_at"`
 	RespondedAt       *time.Time      `json:"responded_at,omitempty"`
 	TelegramMsgID     int             `json:"telegram_msg_id,omitempty"`
+	Fingerprint       string          `json:"fingerprint,omitempty"`
+	ReminderCount     int             `json:"reminder_count,omitempty"`
+	LastRemindedAt    *time.Time      `json:"last_reminded_at,omitempty"`
 	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
 	MutationItem      string          `json:"mutation_item,omitempty"`
 	MutationStartedAt *time.Time      `json:"mutation_started_at,omitempty"`

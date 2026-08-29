@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/autosession"
@@ -15,21 +18,29 @@ import (
 	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
 	"github.com/johnuopini/secret-gate/internal/store"
-	"github.com/johnuopini/secret-gate/internal/telegram"
 )
+
+type telegramClient interface {
+	SendApprovalRequest(*models.ApprovalRequest, string, time.Duration) (int, error)
+	SendAutoApprovedNotification(*models.ApprovalRequest, string, time.Time) error
+	UpdateApprovalRequest(int, *models.ApprovalRequest, time.Duration) error
+	SendApprovalReminder(*models.ApprovalRequest) error
+	SendWriteBlocked(*models.ApprovalRequest, string) error
+}
 
 // Handler holds dependencies for HTTP handlers
 type Handler struct {
-	store    *store.Store
-	opClient *opconnect.Client
-	tgClient *telegram.Client
-	config   *config.Config
-	sessions *autosession.Store
-	log      *logger.Logger
+	store     *store.Store
+	opClient  *opconnect.Client
+	tgClient  telegramClient
+	config    *config.Config
+	sessions  *autosession.Store
+	requestMu sync.Mutex
+	log       *logger.Logger
 }
 
 // New creates a new Handler
-func New(s *store.Store, op *opconnect.Client, tg *telegram.Client, cfg *config.Config, sessions *autosession.Store) *Handler {
+func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Config, sessions *autosession.Store) *Handler {
 	return &Handler{
 		store:    s,
 		opClient: op,
@@ -90,10 +101,11 @@ type BatchRequestPayload struct {
 
 // RequestResponse is the response for a new secret request
 type RequestResponse struct {
-	Token     string `json:"token"`
-	StatusURL string `json:"status_url"`
-	ExpiresAt string `json:"expires_at"`
-	Message   string `json:"message"`
+	Token         string `json:"token"`
+	StatusURL     string `json:"status_url"`
+	ExpiresAt     string `json:"expires_at"`
+	Message       string `json:"message"`
+	RequestReused bool   `json:"request_reused,omitempty"`
 }
 
 // StatusResponse is the response for status checks
@@ -126,46 +138,48 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is allowed")
 		return
 	}
+	h.requestMu.Lock()
+	defer h.requestMu.Unlock()
 
 	var payload BatchRequestPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON payload")
 		return
 	}
-
-	// Normalize: convert legacy single-item format to batch
 	secrets := payload.Secrets
 	if len(secrets) == 0 && payload.SecretName != "" {
-		secrets = []models.SecretRequest{
-			{SecretName: payload.SecretName, Vault: payload.Vault},
-		}
+		secrets = []models.SecretRequest{{SecretName: payload.SecretName, Vault: payload.Vault}}
 	}
-
 	if len(secrets) == 0 {
 		h.writeError(w, http.StatusBadRequest, "missing_fields", "secret_name or secrets[] is required")
 		return
 	}
-
-	// Use the first secret's name for the approval request label
-	primaryName := secrets[0].SecretName
-	primaryVault := secrets[0].Vault
-	if primaryVault == "" {
-		primaryVault = "_auto_"
+	if h.config.WebhookBaseURL == "" {
+		h.writeError(w, http.StatusInternalServerError, "config_error", "WEBHOOK_BASE_URL not configured")
+		return
 	}
 
-	// Get requester IP
+	if payload.Mutation == nil {
+		for i := range secrets {
+			_, actualVault, actualTitle, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
+			if err != nil {
+				h.writeError(w, http.StatusForbidden, "secret_unavailable", "Secret Gate cannot verify read access to the requested item.")
+				return
+			}
+			secrets[i].Vault = actualVault
+			secrets[i].SecretName = actualTitle
+		}
+	}
+
 	requesterIP := r.Header.Get("X-Forwarded-For")
 	if requesterIP == "" {
 		requesterIP = r.RemoteAddr
 	}
-	requesterIP = normalizeRequesterIP(requesterIP)
-
-	// Create the approval request
 	req, err := models.NewApprovalRequest(
-		primaryName,
-		primaryVault,
+		secrets[0].SecretName,
+		secrets[0].Vault,
 		payload.Machine,
-		requesterIP,
+		normalizeRequesterIP(requesterIP),
 		payload.Reason,
 		h.config.RequestTTL,
 	)
@@ -174,8 +188,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create request")
 		return
 	}
-
-	// Attach batch secrets to the request
 	req.Secrets = secrets
 	req.Action = payload.Action
 	if req.Action == "" {
@@ -183,6 +195,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Context = payload.Context
 	req.Mutation = payload.Mutation
+
 	if req.Mutation != nil {
 		if len(secrets) != 1 || secrets[0].Vault == "" || secrets[0].Vault == "_auto_" {
 			h.writeError(w, http.StatusBadRequest, "invalid_mutation", "writes require exactly one item and an explicit vault")
@@ -193,80 +206,132 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Action = req.Mutation.Operation
+		capability := h.opClient.CheckWriteCapability(req.Vault)
+		if !capability.Allowed {
+			if notifyErr := h.tgClient.SendWriteBlocked(req, capability.Message); notifyErr != nil {
+				h.log.Error("Failed to send blocked-write audit notification", logger.F("error", notifyErr.Error()))
+			}
+			status := http.StatusServiceUnavailable
+			if capability.Code == "vault_write_unavailable" {
+				status = http.StatusForbidden
+			}
+			h.writeError(w, status, capability.Code, capability.Message)
+			return
+		}
 	}
+	req.Fingerprint = fingerprintRequest(req)
 
-	// Mutations always require a per-request approval. A broad read window must
-	// never silently authorize changes to the vault.
+	// Mutations always require a one-request approval.
 	if session, ok := h.sessions.Match(); ok && req.Mutation == nil {
 		req.Approve()
 		if err := h.store.Save(req); err != nil {
-			h.log.Error("Failed to save auto-approved request", logger.F("error", err.Error(), "request_id", req.ID))
 			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
 			return
 		}
 		if err := h.tgClient.SendAutoApprovedNotification(req, session.Approver, session.ExpiresAt); err != nil {
 			h.log.Error("Failed to send auto-approval audit notification", logger.F("error", err.Error(), "request_id", req.ID))
 		}
-		h.log.Info("Auto-approved request", logger.F(
-			"request_id", req.ID,
-			"session_id", session.ID,
-			"approver", session.Approver,
-			"machine", req.RequesterMachine,
-			"requester_ip", req.RequesterIP,
-		))
-		baseURL := h.config.WebhookBaseURL
-		if baseURL == "" {
-			h.writeError(w, http.StatusInternalServerError, "config_error", "WEBHOOK_BASE_URL not configured")
-			return
-		}
-		resp := RequestResponse{
+		h.writeJSON(w, http.StatusAccepted, RequestResponse{
 			Token:     req.Token,
-			StatusURL: baseURL + "/status/" + req.Token,
-			ExpiresAt: req.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"),
-			Message:   "Request auto-approved by active approval session. Poll the status_url or retrieve from the secret_url.",
-		}
-		h.writeJSON(w, http.StatusAccepted, resp)
+			StatusURL: h.config.WebhookBaseURL + "/status/" + req.Token,
+			ExpiresAt: req.ExpiresAt.Format(time.RFC3339),
+			Message:   "Request auto-approved by active approval session.",
+		})
 		return
 	}
 
-	// Save to store
-	if err := h.store.Save(req); err != nil {
-		h.log.Error("Failed to save request", logger.F("error", err.Error(), "request_id", req.ID))
+	stored, reused, err := h.store.SaveOrRenew(req, h.config.RequestTTL)
+	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
 		return
 	}
-
-	// Send Telegram notification
-	msgID, err := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.config.AutoApproveTTL)
-	if err != nil {
-		h.log.Error("Failed to send Telegram notification", logger.F("error", err.Error(), "request_id", req.ID))
+	req = stored
+	if reused {
+		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, h.config.AutoApproveTTL); err != nil {
+			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing Telegram approval request.")
+			return
+		}
+		if err := h.tgClient.SendApprovalReminder(req); err != nil {
+			h.log.Error("Failed to send approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
+		}
 	} else {
+		msgID, sendErr := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.config.AutoApproveTTL)
+		if sendErr != nil {
+			_ = h.store.Delete(req.Token)
+			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to deliver the Telegram approval request.")
+			return
+		}
 		req.TelegramMsgID = msgID
-		h.store.Update(req)
+		if err := h.store.Update(req); err != nil {
+			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to record the Telegram approval request.")
+			return
+		}
 	}
 
-	h.log.Info("Created approval request", logger.F(
+	message := "Request submitted. Waiting for human approval via Telegram."
+	if reused {
+		message = "An equivalent approval request is already pending. Secret Gate renewed it and sent the approver a reminder."
+	}
+	h.log.Info("Submitted approval request", logger.F(
 		"request_id", req.ID,
-		"secrets_count", len(secrets),
+		"request_reused", reused,
 		"machine", req.RequesterMachine,
 		"requester_ip", req.RequesterIP,
 	))
+	h.writeJSON(w, http.StatusAccepted, RequestResponse{
+		Token:         req.Token,
+		StatusURL:     h.config.WebhookBaseURL + "/status/" + req.Token,
+		ExpiresAt:     req.ExpiresAt.Format(time.RFC3339),
+		Message:       message,
+		RequestReused: reused,
+	})
+}
 
-	// Build response
-	baseURL := h.config.WebhookBaseURL
-	if baseURL == "" {
-		h.writeError(w, http.StatusInternalServerError, "config_error", "WEBHOOK_BASE_URL not configured")
-		return
+func fingerprintRequest(req *models.ApprovalRequest) string {
+	type fingerprintSecret struct {
+		Name   string
+		Vault  string
+		Fields []string
 	}
-
-	resp := RequestResponse{
-		Token:     req.Token,
-		StatusURL: baseURL + "/status/" + req.Token,
-		ExpiresAt: req.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"),
-		Message:   "Request submitted. Waiting for human approval via Telegram. Poll the status_url to check approval status.",
+	type fingerprintMutation struct {
+		Operation string
+		Category  string
+		Labels    []string
 	}
-
-	h.writeJSON(w, http.StatusAccepted, resp)
+	secrets := make([]fingerprintSecret, 0, len(req.Secrets))
+	for _, secret := range req.Secrets {
+		fields := append([]string(nil), secret.Fields...)
+		sort.Strings(fields)
+		secrets = append(secrets, fingerprintSecret{Name: secret.SecretName, Vault: secret.Vault, Fields: fields})
+	}
+	sort.Slice(secrets, func(i, j int) bool {
+		if secrets[i].Vault != secrets[j].Vault {
+			return secrets[i].Vault < secrets[j].Vault
+		}
+		return secrets[i].Name < secrets[j].Name
+	})
+	var mutation *fingerprintMutation
+	if req.Mutation != nil {
+		labels := make([]string, 0, len(req.Mutation.Fields))
+		for label := range req.Mutation.Fields {
+			labels = append(labels, label)
+		}
+		sort.Strings(labels)
+		mutation = &fingerprintMutation{Operation: req.Mutation.Operation, Category: req.Mutation.Category, Labels: labels}
+	}
+	canonical := struct {
+		Action   string
+		Secrets  []fingerprintSecret
+		Context  models.RequestContext
+		Reason   string
+		Mutation *fingerprintMutation
+	}{
+		Action: req.Action, Secrets: secrets, Context: req.Context,
+		Reason: strings.Join(strings.Fields(req.Reason), " "), Mutation: mutation,
+	}
+	payload, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func normalizeRequesterIP(requesterIP string) string {
@@ -695,7 +760,7 @@ func OpenAPISpec() string {
   "info": {
     "title": "Secret Gate API",
     "description": "Human-in-the-loop gateway for approved reads and writes to 1Password items.",
-    "version": "0.3.2"
+    "version": "0.5.0"
   },
   "servers": [
     {"url": "/", "description": "Relative to deployment URL"}
@@ -759,7 +824,8 @@ func OpenAPISpec() string {
                     "type": "object",
                     "description": "Human-readable agent context shown in Telegram.",
                     "properties": {
-                      "agent": {"type": "string"},
+                      "runtime": {"type": "string"},
+                      "provider": {"type": "string"},
                       "model": {"type": "string"},
                       "think": {"type": "string"},
                       "project": {"type": "string"},

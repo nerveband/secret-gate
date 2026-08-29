@@ -46,10 +46,15 @@ func (f *fakeDaemon) List() ([]daemon.CacheEntryInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDaemon) Flush() error      { f.flushed = true; f.data = map[string]map[string]string{}; return nil }
-func (f *fakeDaemon) StopDaemon() error { f.stopped = true; f.running = false; return nil }
-func (f *fakeDaemon) Watch(daemon.WatchSpec) error  { return nil }
+func (f *fakeDaemon) Flush() error {
+	f.flushed = true
+	f.data = map[string]map[string]string{}
+	return nil
+}
+func (f *fakeDaemon) StopDaemon() error            { f.stopped = true; f.running = false; return nil }
+func (f *fakeDaemon) Watch(daemon.WatchSpec) error { return nil }
 func (f *fakeDaemon) Unwatch(string) error         { return nil }
+
 // --- fake proxy (implements core.ProxyClient + core.AsyncProxyClient) ---
 
 type fakeProxy struct {
@@ -128,10 +133,10 @@ func newTestApp(t *testing.T) *testApp {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	return &testApp{
 		app: &App{
-			Version: "0.4.1", ServerURL: "http://gate",
+			Version: "0.5.0", ServerURL: "http://gate",
 			Service: svc, Async: fp, Admin: fd,
 			StateDir: t.TempDir(),
-			Stdout: stdout, Stderr: stderr, Stdin: &bytes.Buffer{},
+			Stdout:   stdout, Stderr: stderr, Stdin: &bytes.Buffer{},
 			Now: func() time.Time { return time.Unix(59, 0) },
 		},
 		daemon: fd, proxy: fp, stdout: stdout, stderr: stderr,

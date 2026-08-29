@@ -85,7 +85,8 @@ type FieldInfo struct {
 
 // RequestContext describes the requesting agent for the Telegram approver.
 type RequestContext struct {
-	Agent        string `json:"agent,omitempty" jsonschema:"agent name, such as Codex"`
+	Runtime      string `json:"runtime,omitempty" jsonschema:"requesting runtime, such as Paseo"`
+	Provider     string `json:"provider,omitempty" jsonschema:"agent provider, such as Oh My Pi"`
 	Model        string `json:"model,omitempty" jsonschema:"model name"`
 	Think        string `json:"think,omitempty" jsonschema:"thinking level"`
 	Project      string `json:"project,omitempty" jsonschema:"project or repository name"`
@@ -105,6 +106,7 @@ type RequestResult struct {
 	Status          string   `json:"status"`
 	SecretName      string   `json:"secret_name"`
 	Cached          bool     `json:"cached"`
+	RequestReused   bool     `json:"request_reused,omitempty"`
 	FieldsAvailable []string `json:"fields_available,omitempty"`
 	Message         string   `json:"message,omitempty"`
 	Token           string   `json:"token,omitempty"`
@@ -121,9 +123,10 @@ type ExecResult struct {
 
 // PendingRequest is a submitted, not-yet-resolved approval request.
 type PendingRequest struct {
-	Token     string `json:"token"`
-	StatusURL string `json:"status_url"`
-	ExpiresAt string `json:"expires_at"`
+	Token         string `json:"token"`
+	StatusURL     string `json:"status_url"`
+	ExpiresAt     string `json:"expires_at"`
+	RequestReused bool   `json:"request_reused,omitempty"`
 }
 
 // StatusResult is a point-in-time approval status.
