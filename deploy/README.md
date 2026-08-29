@@ -9,16 +9,17 @@ loopback. The archived release contains links to those protected files so the
 same helper can deploy v0.5.0, whose Compose file still uses conventional local
 filenames.
 
-One root installation is required:
+One root installation is required. From the repository checkout on DevBox:
 
 ```sh
-sudo install -o root -g root -m 0755 scripts/deploy-devbox-release /usr/local/sbin/deploy-devbox-secret-gate
-sudo install -o root -g root -m 0644 deploy/systemd/secret-gate-release-deploy.service /etc/systemd/system/secret-gate-release-deploy.service
-sudo install -o root -g root -m 0644 deploy/systemd/secret-gate-release-deploy.timer /etc/systemd/system/secret-gate-release-deploy.timer
-sudo systemctl daemon-reload
-sudo systemctl disable secret-gate.service
-sudo systemctl enable --now secret-gate-release-deploy.timer
-sudo systemctl start secret-gate-release-deploy.service
+sudo ./scripts/install-devbox-release-deployer
+```
+
+From another Tailscale-connected machine, update the checkout and install it in
+one command:
+
+```sh
+ssh nerveband@100.64.0.2 'cd /home/me/src/tools/secret-gate && git pull --ff-only && sudo ./scripts/install-devbox-release-deployer'
 ```
 
 Check the result without reading environment or credential files:
