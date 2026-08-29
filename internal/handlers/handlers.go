@@ -760,7 +760,7 @@ func OpenAPISpec() string {
   "info": {
     "title": "Secret Gate API",
     "description": "Human-in-the-loop gateway for approved reads and writes to 1Password items.",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "servers": [
     {"url": "/", "description": "Relative to deployment URL"}

@@ -128,7 +128,7 @@ func TestOpenAPISpecDescribesMutationsAndFieldSelectors(t *testing.T) {
 		t.Fatalf("OpenAPI is invalid JSON: %v", err)
 	}
 	info := spec["info"].(map[string]any)
-	if info["version"] != "0.5.0" {
+	if info["version"] != "0.5.1" {
 		t.Fatalf("version = %v", info["version"])
 	}
 	paths := spec["paths"].(map[string]any)

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.1 — 2026-08-29
+
+### Added
+- Root-owned systemd timer for automatic deployment of verified release tags on DevBox.
+- One-command bootstrap installer for the automatic deployment service.
+
+### Fixed
+- DevBox deployments authenticate private GitHub fetches, create writable service state, and build the server for amd64.
+- Daemon shutdown no longer races with server goroutine registration.
+
 ## v0.5.0 — 2026-08-28
 
 ### Added

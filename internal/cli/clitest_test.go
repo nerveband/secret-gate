@@ -133,7 +133,7 @@ func newTestApp(t *testing.T) *testApp {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	return &testApp{
 		app: &App{
-			Version: "0.5.0", ServerURL: "http://gate",
+			Version: "0.5.1", ServerURL: "http://gate",
 			Service: svc, Async: fp, Admin: fd,
 			StateDir: t.TempDir(),
 			Stdout:   stdout, Stderr: stderr, Stdin: &bytes.Buffer{},
