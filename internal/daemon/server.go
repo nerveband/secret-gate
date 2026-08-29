@@ -16,6 +16,7 @@ type Server struct {
 	cacheTTL   time.Duration
 	startedAt  time.Time
 	watcher    *Watcher
+	runMu      sync.Mutex
 	listenerMu sync.Mutex
 	listener   net.Listener
 	stopCh     chan struct{}
@@ -36,6 +37,8 @@ func NewServer(socketPath string, cacheTTL time.Duration) *Server {
 }
 
 func (s *Server) Run() error {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 	if s.watcher.restoreErr != nil {
 		return s.watcher.restoreErr
 	}
@@ -94,6 +97,8 @@ func (s *Server) Stop() {
 		s.listenerMu.Unlock()
 		os.Remove(s.socketPath)
 	})
+	s.runMu.Lock()
+	s.runMu.Unlock()
 	s.wg.Wait()
 }
 
