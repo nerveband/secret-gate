@@ -61,8 +61,6 @@ type ApprovalRequest struct {
 	RespondedAt       *time.Time      `json:"responded_at,omitempty"`
 	TelegramMsgID     int             `json:"telegram_msg_id,omitempty"`
 	Fingerprint       string          `json:"fingerprint,omitempty"`
-	ReminderCount     int             `json:"reminder_count,omitempty"`
-	LastRemindedAt    *time.Time      `json:"last_reminded_at,omitempty"`
 	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
 	MutationItem      string          `json:"mutation_item,omitempty"`
 	MutationStartedAt *time.Time      `json:"mutation_started_at,omitempty"`

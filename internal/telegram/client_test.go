@@ -132,12 +132,10 @@ func TestDecisionMessagesPreserveNarrativeAndReason(t *testing.T) {
 
 func TestMessagesBoldOnlyReasonAndKeepIdentityOrder(t *testing.T) {
 	now := time.Date(2026, 8, 28, 15, 27, 0, 0, time.FixedZone("EDT", -4*60*60))
-	reminded := now.Add(5 * time.Minute)
 	req := &models.ApprovalRequest{
 		ID: "request-id", SecretName: "Deploy key", Vault: "AI Agents",
 		Reason: "Deploy <release> safely.", Action: "read",
 		RequestedAt: now, ExpiresAt: now.Add(15 * time.Minute),
-		LastRemindedAt: &reminded, ReminderCount: 2,
 		Context: models.RequestContext{
 			Runtime: "Paseo", Provider: "Oh My Pi", Model: "gpt-5.6-sol",
 			Think: "high", Project: "secret-gate", Task: "Deploy Secret Gate.",
@@ -156,9 +154,6 @@ func TestMessagesBoldOnlyReasonAndKeepIdentityOrder(t *testing.T) {
 			t.Fatalf("identity order in %q", message)
 		}
 		last = index
-	}
-	if got := reminderMessage(req); !strings.HasPrefix(got, "⏰ Approval reminder") || strings.Count(got, "<b>") != 1 {
-		t.Fatalf("reminder = %q", got)
 	}
 	if got := blockedWriteMessage(req, "The token has read-only access."); !strings.HasPrefix(got, "⛔ Write request blocked") || strings.Count(got, "<b>") != 1 {
 		t.Fatalf("blocked = %q", got)

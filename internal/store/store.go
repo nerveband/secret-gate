@@ -63,10 +63,7 @@ func (s *Store) SaveOrRenew(req *models.ApprovalRequest, ttl time.Duration) (*mo
 	defer s.mu.Unlock()
 	if existing := s.byFingerprint[req.Fingerprint]; existing != nil {
 		if existing.Status == models.StatusPending && !existing.IsExpired() && mutationsEqual(existing.Mutation, req.Mutation) {
-			now := time.Now()
-			existing.ExpiresAt = now.Add(ttl)
-			existing.LastRemindedAt = &now
-			existing.ReminderCount++
+			existing.ExpiresAt = time.Now().Add(ttl)
 			copy := *existing
 			return &copy, true, nil
 		}

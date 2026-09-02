@@ -19,7 +19,6 @@ import (
 type fakeTelegram struct {
 	sends       int
 	edits       int
-	reminders   int
 	blocked     int
 	blockedText string
 }
@@ -35,11 +34,6 @@ func (f *fakeTelegram) SendAutoApprovedNotification(*models.ApprovalRequest, str
 
 func (f *fakeTelegram) UpdateApprovalRequest(int, *models.ApprovalRequest, time.Duration) error {
 	f.edits++
-	return nil
-}
-
-func (f *fakeTelegram) SendApprovalReminder(*models.ApprovalRequest) error {
-	f.reminders++
 	return nil
 }
 
@@ -128,7 +122,7 @@ func TestOpenAPISpecDescribesMutationsAndFieldSelectors(t *testing.T) {
 		t.Fatalf("OpenAPI is invalid JSON: %v", err)
 	}
 	info := spec["info"].(map[string]any)
-	if info["version"] != "0.5.1" {
+	if info["version"] != "0.5.2" {
 		t.Fatalf("version = %v", info["version"])
 	}
 	paths := spec["paths"].(map[string]any)
@@ -252,7 +246,7 @@ func TestHandleStatusLongPollTimeout(t *testing.T) {
 	}
 }
 
-func TestHandleRequestRenewsEquivalentPendingRequest(t *testing.T) {
+func TestHandleRequestReusesEquivalentPendingRequestWithoutDuplicateMessage(t *testing.T) {
 	connect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/vaults":
@@ -290,8 +284,11 @@ func TestHandleRequestRenewsEquivalentPendingRequest(t *testing.T) {
 	if responses[0].Token != responses[1].Token || responses[0].RequestReused || !responses[1].RequestReused {
 		t.Fatalf("responses = %#v", responses)
 	}
-	if requests.Count() != 1 || tg.sends != 1 || tg.edits != 1 || tg.reminders != 1 {
-		t.Fatalf("count=%d sends=%d edits=%d reminders=%d", requests.Count(), tg.sends, tg.edits, tg.reminders)
+	if !strings.Contains(responses[1].Message, "without sending another Telegram message") {
+		t.Fatalf("reused response message = %q", responses[1].Message)
+	}
+	if requests.Count() != 1 || tg.sends != 1 || tg.edits != 1 {
+		t.Fatalf("count=%d sends=%d edits=%d", requests.Count(), tg.sends, tg.edits)
 	}
 }
 

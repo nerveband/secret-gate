@@ -170,25 +170,6 @@ func approvalMessage(req *models.ApprovalRequest) string {
 	b.WriteString("\nRequest: <code>")
 	b.WriteString(html.EscapeString(req.ID))
 	b.WriteString("</code>")
-	if req.ReminderCount > 0 {
-		fmt.Fprintf(&b, "\nReminders: %d", req.ReminderCount)
-	}
-	return b.String()
-}
-
-func reminderMessage(req *models.ApprovalRequest) string {
-	var b strings.Builder
-	b.WriteString("⏰ Approval reminder\n\nStill waiting for approval to ")
-	b.WriteString(strings.ToLower(actionSummary(req)))
-	b.WriteString(".")
-	writeReason(&b, req)
-	writeRequester(&b, req)
-	b.WriteString("\n\nOriginally requested: ")
-	b.WriteString(req.RequestedAt.Format("15:04 MST"))
-	b.WriteString("\nReminded: ")
-	remindedAt := firstTime(req.LastRemindedAt, req.RequestedAt)
-	b.WriteString(remindedAt.Format("15:04 MST"))
-	fmt.Fprintf(&b, "\nReminder: %d", req.ReminderCount)
 	return b.String()
 }
 
@@ -299,13 +280,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func firstTime(value *time.Time, fallback time.Time) time.Time {
-	if value != nil {
-		return *value
-	}
-	return fallback
-}
-
 func formatDurationLabel(d time.Duration) string {
 	if d <= 0 {
 		return "window"
@@ -375,11 +349,6 @@ func (c *Client) UpdateApprovalRequest(messageID int, req *models.ApprovalReques
 	}
 	keyboard := &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)}}}}
 	return c.editMessage(messageID, approvalMessage(req), keyboard)
-}
-
-// SendApprovalReminder sends a compact reminder for an existing request.
-func (c *Client) SendApprovalReminder(req *models.ApprovalRequest) error {
-	return c.sendText(reminderMessage(req))
 }
 
 // SendWriteBlocked sends an audit warning without approval buttons.

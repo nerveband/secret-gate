@@ -24,7 +24,6 @@ type telegramClient interface {
 	SendApprovalRequest(*models.ApprovalRequest, string, time.Duration) (int, error)
 	SendAutoApprovedNotification(*models.ApprovalRequest, string, time.Time) error
 	UpdateApprovalRequest(int, *models.ApprovalRequest, time.Duration) error
-	SendApprovalReminder(*models.ApprovalRequest) error
 	SendWriteBlocked(*models.ApprovalRequest, string) error
 }
 
@@ -251,9 +250,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing Telegram approval request.")
 			return
 		}
-		if err := h.tgClient.SendApprovalReminder(req); err != nil {
-			h.log.Error("Failed to send approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
-		}
 	} else {
 		msgID, sendErr := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.config.AutoApproveTTL)
 		if sendErr != nil {
@@ -270,7 +266,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	message := "Request submitted. Waiting for human approval via Telegram."
 	if reused {
-		message = "An equivalent approval request is already pending. Secret Gate renewed it and sent the approver a reminder."
+		message = "An equivalent approval request is already pending. Secret Gate reused it without sending another Telegram message."
 	}
 	h.log.Info("Submitted approval request", logger.F(
 		"request_id", req.ID,
@@ -760,7 +756,7 @@ func OpenAPISpec() string {
   "info": {
     "title": "Secret Gate API",
     "description": "Human-in-the-loop gateway for approved reads and writes to 1Password items.",
-    "version": "0.5.1"
+    "version": "0.5.2"
   },
   "servers": [
     {"url": "/", "description": "Relative to deployment URL"}

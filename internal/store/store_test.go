@@ -250,9 +250,10 @@ func TestClaimMutationAllowsOneConcurrentExecutor(t *testing.T) {
 
 func TestSaveOrRenewEquivalentPendingRequest(t *testing.T) {
 	requests := store.New()
+	firstExpiry := time.Now().Add(time.Minute)
 	first := &models.ApprovalRequest{
 		ID: "first", Token: "token-first", Fingerprint: "same",
-		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
+		Status: models.StatusPending, ExpiresAt: firstExpiry,
 		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "same-value"}},
 	}
 	if _, reused, err := requests.SaveOrRenew(first, time.Minute); err != nil || reused {
@@ -267,7 +268,7 @@ func TestSaveOrRenewEquivalentPendingRequest(t *testing.T) {
 	if err != nil || !reused {
 		t.Fatalf("renew: reused=%v err=%v", reused, err)
 	}
-	if got.Token != first.Token || got.ReminderCount != 1 || requests.Count() != 1 {
+	if got.Token != first.Token || !got.ExpiresAt.After(firstExpiry) || requests.Count() != 1 {
 		t.Fatalf("renewed request = %#v, count=%d", got, requests.Count())
 	}
 }

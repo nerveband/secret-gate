@@ -12,7 +12,7 @@ func TestRunVersion(t *testing.T) {
 	}
 	env := ta.okEnvelope(t)
 	data := env["data"].(map[string]interface{})
-	if data["version"] != "0.5.1" || env["command"] != "version" {
+	if data["version"] != "0.5.2" || env["command"] != "version" {
 		t.Fatalf("env = %v", env)
 	}
 }

@@ -167,9 +167,9 @@ Pending approvals are recorded in `requests.json` under the client state directo
 Tracked requests move monotonically from `pending` to `approved` (read), `completed` (write), `denied`, `expired`, `failed`, or `cancelled`. Concurrent client and daemon updates are serialized with a process-shared file lock and crash-durable atomic writes.
 
 Equivalent pending requests reuse the original request ID and token, extend
-its expiry, and send a compact Telegram reminder. The response includes
-`request_reused: true`; Secret Gate never creates a second actionable
-approval for the same operation, resolved vault, fields, reason, and
+its expiry, and refresh the existing Telegram message in place. The response
+includes `request_reused: true`; Secret Gate never sends a duplicate approval
+or reminder for the same operation, resolved vault, fields, reason, and
 requester context.
 
 Approver context is displayed as runtime, provider, model, thinking level,

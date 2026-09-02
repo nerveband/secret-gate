@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.2 — 2026-09-02
+
+### Fixed
+- Equivalent pending requests now refresh the original Telegram approval in place without sending a duplicate reminder.
+
 ## v0.5.1 — 2026-08-29
 
 ### Added
