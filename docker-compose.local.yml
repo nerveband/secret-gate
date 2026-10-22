@@ -44,9 +44,6 @@ services:
   secret-gate:
     build:
       context: .
-      args:
-        TARGETARCH: amd64
-        TARGETOS: linux
     depends_on:
       op-connect-api:
         condition: service_started

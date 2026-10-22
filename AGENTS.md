@@ -1,12 +1,12 @@
-# DevBox repository instructions
+# Secret Gate repository instructions
 
 ## Host and scope
 
-- This checkout is `/home/me/src/tools/secret-gate` on `secret-gate.example.com`.
+- This checkout is `/path/to/secret-gate` on `mac-server`. The Linux devbox was retired.
 - Verify `pwd`, `hostname`, `id -un`, and `git status --short --branch` before changing files.
 - Work as `nerveband`. Preserve unrelated changes and never print, persist, or commit secret values.
 
-## Linux build and test
+## Build and test
 
 Use task-local writable caches. Integration tests create loopback TCP listeners and Unix sockets, so the execution sandbox must allow both.
 
@@ -21,7 +21,7 @@ env GOCACHE=/tmp/secret-gate-go-cache GOMODCACHE=/tmp/secret-gate-go-mod CGO_ENA
 
 The local daemon uses `$XDG_RUNTIME_DIR/secret-gate.{sock,pid}` when that variable is set. It otherwise uses `/tmp/secret-gate-<uid>.{sock,pid}`. The socket and PID file must be mode `0600`.
 
-Linux and macOS are the supported client platforms. Darwin artifacts built on DevBox are cross-builds; native macOS behavior is verified only by the macOS CI job. Windows is unsupported because the daemon and command executor require Unix sockets and POSIX process behavior.
+Linux and macOS are the supported client platforms. Run native macOS tests here. GitHub CI tests Linux and tests macOS on release tags and manual runs. Linux artifacts built here are cross-builds. Windows is unsupported because the daemon and command executor require Unix sockets and POSIX process behavior.
 
 ## CLI contract (0.4.0+)
 
@@ -39,13 +39,15 @@ Linux and macOS are the supported client platforms. Darwin artifacts built on De
   - `skills/secret-gate/SKILL.md` examples are validated against the live
     manifest by `TestSkillCommandsExistInManifest` — update both together.
 
-## Local Docker stack
+## Deployment on mac-server
 
-- Docker is a system service on DevBox. Use `sudo docker` and `sudo docker compose` for daemon operations.
-- `docker-compose.local.yml` publishes Secret Gate on `127.0.0.1:18080` and 1Password Connect on `127.0.0.1:18081` through the host port mappings. Do not expose either service publicly.
-- The local stack requires mode-`0600` `.env` and `1password-credentials.json` files. Do not create, copy, inspect, or commit those files during build-only validation.
-- Validate Compose without secrets by supplying placeholder interpolation values to `docker compose config --quiet`. Only start the stack when the real local credential files already exist and the task authorizes using them.
-- `scripts/local-connect-doctor.sh` checks the published ports after the stack starts.
+- Docker runs in Colima with CLI context `colima`. Use `docker` and the installed standalone `docker-compose`, without sudo. Never start Docker Desktop or change Docker context.
+- The live Compose owner is `/path/to/deploy/compose.yaml`, in the server control workspace. Read that workspace's instructions before deploying.
+- Follow [deploy/README.md](deploy/README.md). Deploy only the `secret-gate` service with `--no-deps`; preserve Connect containers, credentials, volumes, and the existing webhook URL.
+- The live service publishes only `127.0.0.1:18080`. Connect has no host port. Credentials remain in the existing restricted files under `~/.config`; never inspect or copy their contents.
+- Validate Compose without printing resolved environment values using `docker-compose ... config --quiet`. Build contexts must exclude `.env` and `1password-credentials.json`.
+- `docker-compose.local.yml` is an optional local stack, not the live deployment owner. The DevBox systemd helpers are historical and must not be installed on mac-server.
+- Release tags use `vMAJOR.MINOR.PATCH`. Update `internal/version`, its version test, and `CHANGELOG.md` together. Push the commit and tag only when authorized; verify CI and GitHub release assets, and report unavailable checks accurately.
 
 ## Cleanup
 

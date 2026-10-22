@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.3 (2026-10-21)
+
+### Fixed
+- Upgrade the MCP Go SDK to v1.4.1 to address the three advisories flagged by govulncheck.
+- Build the Docker server for the requested platform instead of defaulting to ARM64.
+- Exclude Git metadata and runtime credential files from Docker build contexts.
+- Let the optional local Compose stack use the host architecture.
+
+### Documentation
+- Document mac-server as the active deployment host and the server workspace as the live Compose owner.
+- Mark the retired DevBox deployment helpers as historical.
+
 ## v0.5.2 — 2026-09-02
 
 ### Fixed

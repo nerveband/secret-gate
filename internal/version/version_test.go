@@ -10,7 +10,7 @@ func TestVersionIsSemver(t *testing.T) {
 	if !re.MatchString(Version) {
 		t.Fatalf("Version %q is not plain semver", Version)
 	}
-	if Version != "0.5.2" {
-		t.Fatalf("Version = %q, want 0.5.2 for this release", Version)
+	if Version != "0.5.3" {
+		t.Fatalf("Version = %q, want 0.5.3 for this release", Version)
 	}
 }

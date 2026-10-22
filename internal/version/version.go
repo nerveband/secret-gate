@@ -2,4 +2,4 @@
 // CLI schema, the JSON envelope, and the MCP server implementation info.
 package version
 
-const Version = "0.5.2"
+const Version = "0.5.3"

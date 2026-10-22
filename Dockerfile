@@ -1,7 +1,7 @@
 FROM golang:1.25-alpine AS builder
 
-ARG TARGETARCH=arm64
-ARG TARGETOS=linux
+ARG TARGETARCH
+ARG TARGETOS
 
 WORKDIR /app
 RUN apk add --no-cache ca-certificates

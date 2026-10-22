@@ -87,6 +87,10 @@ Windows is not supported. The cache daemon relies on Unix sockets and POSIX proc
 
 ## Server Deployment
 
+The maintained installation runs on `mac-server` under Colima. See the
+[deployment and release guide](deploy/README.md) for the live Compose owner,
+release steps, verification, and rollback. The Linux devbox is retired.
+
 ### Docker Compose (recommended)
 
 Create a `.env` file with your configuration (see [Server Configuration](#server-configuration)), then:
