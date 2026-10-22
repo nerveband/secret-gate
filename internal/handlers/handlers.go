@@ -14,6 +14,7 @@ import (
 
 	"github.com/johnuopini/secret-gate/internal/autosession"
 	"github.com/johnuopini/secret-gate/internal/config"
+	"github.com/johnuopini/secret-gate/internal/core"
 	"github.com/johnuopini/secret-gate/internal/logger"
 	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
@@ -541,7 +542,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 			if len(s.Fields) > 0 {
 				filtered := make(map[string]string)
 				for _, f := range s.Fields {
-					if actual, val, ok := resolveRequestedField(allFields, f); ok {
+					if actual, val, ok := core.ResolveField(allFields, f); ok {
 						filtered[actual] = val
 					}
 				}
@@ -582,32 +583,6 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("Secret retrieved", logger.F("request_id", req.ID, "secret", actualSecret, "vault", actualVault))
 	h.store.Delete(token)
 	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret, Vault: actualVault})
-}
-
-func resolveRequestedField(values map[string]string, wanted string) (string, string, bool) {
-	normalize := func(s string) string {
-		return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(s)))
-	}
-	w := normalize(wanted)
-	aliases := map[string]bool{}
-	switch w {
-	case "otp", "totp", "mfa", "2fa", "onetimepassword":
-		for _, a := range []string{"otp", "totp", "mfa", "2fa", "onetimepassword"} {
-			aliases[a] = true
-		}
-	case "note", "notes", "notesplain", "securenote":
-		for _, a := range []string{"note", "notes", "notesplain", "securenote"} {
-			aliases[a] = true
-		}
-	default:
-		aliases[w] = true
-	}
-	for name, value := range values {
-		if aliases[normalize(name)] {
-			return name, value, true
-		}
-	}
-	return "", "", false
 }
 
 // HandleHealth handles GET /health

@@ -583,6 +583,10 @@ func itemFieldValues(item *Item) map[string]string {
 		value := normalizeFieldValue(f)
 		if f.ID != "" {
 			fields[f.ID] = value
+			// OTP-type fields stay reachable by OTP alias whatever their label.
+			if strings.EqualFold(f.Type, "OTP") && !strings.HasPrefix(f.ID, "TOTP_") {
+				fields["TOTP_"+f.ID] = value
+			}
 		}
 		if f.Label == "" {
 			continue

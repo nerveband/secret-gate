@@ -155,6 +155,9 @@ func (s *Service) GetOTP(secretName, vault, field string) (*OTPResult, error) {
 	}
 	actual, seed, ok := ResolveField(values, wanted)
 	if !ok {
+		if err := otpAmbiguity(values, wanted); err != nil {
+			return nil, err
+		}
 		return nil, E(ErrNotFound, "no OTP/MFA/TOTP/2FA field is available in this item",
 			fmt.Sprintf("run: secret-gate item fields --item %q", secretName))
 	}
@@ -167,6 +170,21 @@ func (s *Service) GetOTP(secretName, vault, field string) (*OTPResult, error) {
 		ExpiresAt:  expires.UTC().Format(time.RFC3339),
 		SecretUsed: secretName + "/" + actual,
 	}, nil
+}
+
+// otpAmbiguity reports an OTP alias that matches several unlabeled OTP fields.
+func otpAmbiguity(values map[string]string, wanted string) error {
+	switch normalizeFieldName(wanted) {
+	case "otp", "totp", "mfa", "2fa", "onetimepassword":
+	default:
+		return nil
+	}
+	ids := OTPFieldIDs(values)
+	if len(ids) < 2 {
+		return nil
+	}
+	return E(ErrValidation, fmt.Sprintf("%q matches several OTP fields: %s", wanted, strings.Join(ids, ", ")),
+		"pass --field <id> with one of the listed field IDs")
 }
 
 // itemRedactor registers every field value of an item so no exact value
@@ -192,6 +210,9 @@ func (s *Service) Exec(ctx context.Context, req ExecRequest) (*ExecOutcome, erro
 	}
 	actual, value, ok := ResolveField(values, req.Field)
 	if !ok {
+		if err := otpAmbiguity(values, req.Field); err != nil {
+			return nil, err
+		}
 		return nil, E(ErrNotFound,
 			fmt.Sprintf("field %q not found in item %q", req.Field, req.SecretName),
 			"available fields: "+strings.Join(FieldNames(values), ", "))

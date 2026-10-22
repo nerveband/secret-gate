@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- OTP aliases (`otp`, `totp`, `mfa`, `2fa`, `one-time password`) and `otp exec` without `--field` now resolve to the item's single OTP-type field even when it has no label, at both approval and use. Several unlabeled OTP fields return a validation error listing their field IDs; the field ID still works.
+
 ## v0.5.3 (2026-10-21)
 
 ### Fixed

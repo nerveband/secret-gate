@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+func TestItemFieldValuesKeysOTPFieldsByType(t *testing.T) {
+	item := &Item{Fields: []Field{
+		{ID: "TOTP_9FCC", Label: "", Type: "OTP", Value: "seed-a"},
+		{ID: "custom-id", Label: "Verification", Type: "OTP", Value: "seed-b"},
+		{ID: "password", Label: "password", Type: "CONCEALED", Value: "pw"},
+	}}
+	got := itemFieldValues(item)
+	if got["TOTP_9FCC"] != "seed-a" || got["TOTP_custom-id"] != "seed-b" || got["TOTP_password"] != "" {
+		t.Fatalf("OTP keys = %v", got)
+	}
+}
+
 func TestItemFieldValuesKeepsDuplicateLabelsAddressable(t *testing.T) {
 	item := &Item{Fields: []Field{
 		{ID: "first-id", Label: "context", Value: "first", Section: &Section{Label: "Development"}},
