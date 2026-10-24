@@ -325,6 +325,10 @@ func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, appro
 	}
 
 	if !apiResp.OK {
+		// Re-editing a message to identical text and buttons is a no-op, not a failure.
+		if strings.Contains(apiResp.Description, "message is not modified") {
+			return nil
+		}
 		return fmt.Errorf("telegram API error: %s", apiResp.Description)
 	}
 
@@ -461,6 +465,10 @@ func (c *Client) DeleteWebhook() error {
 	}
 
 	if !apiResp.OK {
+		// Re-editing a message to identical text and buttons is a no-op, not a failure.
+		if strings.Contains(apiResp.Description, "message is not modified") {
+			return nil
+		}
 		return fmt.Errorf("telegram API error: %s", apiResp.Description)
 	}
 
@@ -542,6 +550,10 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 	}
 
 	if !apiResp.OK {
+		// Re-editing a message to identical text and buttons is a no-op, not a failure.
+		if strings.Contains(apiResp.Description, "message is not modified") {
+			return nil
+		}
 		return fmt.Errorf("telegram API error: %s", apiResp.Description)
 	}
 

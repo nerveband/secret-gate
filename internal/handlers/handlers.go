@@ -261,6 +261,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	req = stored
 	if reused {
 		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, h.config.AutoApproveTTL); err != nil {
+			h.log.Error("Failed to refresh Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID, "telegram_message_id", req.TelegramMsgID))
 			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing Telegram approval request.")
 			return
 		}
