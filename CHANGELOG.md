@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `write create` with category PASSWORD (and LOGIN) no longer fails after approval: `password` and `username` fields carry the Connect purposes the template requires (#11). Purposes are not sent for SERVER, DATABASE, EMAIL_ACCOUNT, or WIRELESS_ROUTER, which Connect rejects.
+- Connect validation failures on writes return a `validation` error with Connect's message instead of `network`.
+- Writes are checked before the Telegram approval (unsupported category, missing password, empty values, existing or missing or duplicated title, double quote in title) so approvals are not spent on requests that cannot succeed. Categories are normalized to upper case.
+- `credential`, `clientsecret`, `secretkey`, and token-style fields are stored as concealed fields.
+- Reusing a pending approval no longer fails when Telegram answers "message is not modified", and refresh errors are logged (#13).
+
+### Known issues
+- Connect read-after-write lag, titles containing a double quote, duplicate-title reads, and a possible duplicate on retry after an ambiguous write failure are tracked in #12.
+
 ## v0.5.4 (2026-10-22)
 
 ### Fixed

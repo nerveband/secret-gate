@@ -98,6 +98,14 @@ unverifiable capability returns `vault_write_unavailable` or
 approval buttons. Preview with `--dry-run` (labels only). Never put values
 in the reason.
 
+Secret Gate also checks the item against 1Password Connect before asking for
+approval, and returns `validation` without sending a Telegram message when:
+the category is unsupported (DOCUMENT, CUSTOM), a PASSWORD item has no
+non-empty `password` field, a value is empty, `create` targets a title that
+already exists, `update` targets a missing or duplicated title, or the title
+contains a double quote. Categories are case-insensitive. Connect makes a
+new item visible to reads after a few seconds; wait before reading it back.
+
 ## Daemon
 
 ```bash
