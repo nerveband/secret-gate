@@ -182,6 +182,8 @@ func httpError(status int, body []byte) error {
 	var errResp errorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Message != "" {
 		switch errResp.Error {
+		case string(ErrValidation):
+			code = ErrValidation
 		case string(ErrVaultWriteUnavailable):
 			code = ErrVaultWriteUnavailable
 		case string(ErrWriteCapabilityUnknown):

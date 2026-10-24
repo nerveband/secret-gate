@@ -2,6 +2,7 @@ package opconnect
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -119,5 +120,29 @@ func TestCheckWriteCapability(t *testing.T) {
 				t.Fatalf("result = %#v", got)
 			}
 		})
+	}
+}
+
+func TestNewFieldPasswordUsesPasswordPurpose(t *testing.T) {
+	f := newField("password", "v")
+	if f.ID != "password" || f.Purpose != "PASSWORD" || f.Type != "CONCEALED" {
+		t.Fatalf("field = %#v", f)
+	}
+}
+
+func TestPutItemSurfacesConnectValidationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/vaults" {
+			_ = json.NewEncoder(w).Encode([]Vault{{ID: "v", Name: "Agents"}})
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"status":400,"message":"invalid"}`))
+	}))
+	defer server.Close()
+	_, err := New(server.URL, "t").PutItem("Agents", "x", "create", "PASSWORD", map[string]string{"password": "v"})
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("err = %v", err)
 	}
 }

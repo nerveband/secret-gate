@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -492,6 +493,11 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 		if mutationErr != nil {
 			_ = h.store.ReleaseMutation(token)
 			h.log.Error("Failed to write 1Password item", logger.F("error", mutationErr.Error(), "request_id", req.ID, "item", s.SecretName, "vault", s.Vault))
+			var verr *opconnect.ValidationError
+			if errors.As(mutationErr, &verr) {
+				h.writeError(w, http.StatusUnprocessableEntity, "validation", "1Password rejected the item: "+verr.Message)
+				return
+			}
 			h.writeError(w, http.StatusInternalServerError, "item_write_failed", "Failed to write item to 1Password")
 			return
 		}

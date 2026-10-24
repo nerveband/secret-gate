@@ -425,6 +425,9 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusBadRequest {
+			return nil, &ValidationError{Message: string(b)}
+		}
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
 	}
 	var saved Item
@@ -432,6 +435,13 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return &saved, nil
+}
+
+// ValidationError is a 1Password Connect 400 rejecting an item as invalid.
+type ValidationError struct{ Message string }
+
+func (e *ValidationError) Error() string {
+	return "unexpected status 400: " + e.Message
 }
 
 func newField(label, value string) Field {
@@ -444,7 +454,16 @@ func newField(label, value string) Field {
 		field.ID = "notesPlain"
 		field.Label = "notesPlain"
 		field.Purpose = "NOTES"
-	case "password", "passphrase", "secret", "token", "apikey", "privatekey":
+	case "password":
+		field.ID = "password"
+		field.Label = "password"
+		field.Type = "CONCEALED"
+		field.Purpose = "PASSWORD"
+	case "username":
+		field.ID = "username"
+		field.Label = "username"
+		field.Purpose = "USERNAME"
+	case "passphrase", "secret", "token", "apikey", "privatekey":
 		field.Type = "CONCEALED"
 	case "url", "website", "loginurl":
 		field.Type = "URL"
