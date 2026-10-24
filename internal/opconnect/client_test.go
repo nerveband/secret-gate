@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -71,10 +72,10 @@ func TestPutItemCreatesSecureNote(t *testing.T) {
 }
 
 func TestNewFieldRecognizesOTPAndConcealedAliases(t *testing.T) {
-	if field := newField("MFA", "seed"); field.Type != "OTP" {
+	if field := newField("", "MFA", "seed"); field.Type != "OTP" {
 		t.Fatalf("MFA type = %s", field.Type)
 	}
-	if field := newField("api_key", "value"); field.Type != "CONCEALED" {
+	if field := newField("", "api_key", "value"); field.Type != "CONCEALED" {
 		t.Fatalf("api_key type = %s", field.Type)
 	}
 }
@@ -124,7 +125,7 @@ func TestCheckWriteCapability(t *testing.T) {
 }
 
 func TestNewFieldPasswordUsesPasswordPurpose(t *testing.T) {
-	f := newField("password", "v")
+	f := newField("PASSWORD", "password", "v")
 	if f.ID != "password" || f.Purpose != "PASSWORD" || f.Type != "CONCEALED" {
 		t.Fatalf("field = %#v", f)
 	}
@@ -144,5 +145,63 @@ func TestPutItemSurfacesConnectValidationError(t *testing.T) {
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestNewFieldPurposesOnlyWhereTemplatesNeedThem(t *testing.T) {
+	for cat, want := range map[string]string{"PASSWORD": "PASSWORD", "LOGIN": "PASSWORD", "SERVER": "", "DATABASE": "", "": ""} {
+		if got := newField(cat, "password", "v").Purpose; got != want {
+			t.Errorf("%s password purpose = %q, want %q", cat, got, want)
+		}
+	}
+	if newField("LOGIN", "username", "u").Purpose != "USERNAME" || newField("SERVER", "username", "u").Purpose != "" {
+		t.Fatal("username purpose must apply to LOGIN only")
+	}
+	if newField("API_CREDENTIAL", "credential", "v").Type != "CONCEALED" {
+		t.Fatal("credential must be concealed")
+	}
+}
+
+func TestPrecheckMutationRejectsDoomedWrites(t *testing.T) {
+	titles := map[string]int{"exists": 1, "dup": 2}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/vaults" {
+			_ = json.NewEncoder(w).Encode([]Vault{{ID: "v", Name: "Agents"}})
+			return
+		}
+		var out []Item
+		for title, n := range titles {
+			if strings.Contains(r.URL.Query().Get("filter"), `"`+title+`"`) {
+				for i := 0; i < n; i++ {
+					out = append(out, Item{ID: "id", Title: title})
+				}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer server.Close()
+	c := New(server.URL, "t")
+	pw := map[string]string{"password": "v"}
+	cases := []struct {
+		name, title, op, cat string
+		fields               map[string]string
+		bad                  bool
+	}{
+		{"create ok", "new", "create", "password", pw, false},
+		{"create existing", "exists", "create", "PASSWORD", pw, true},
+		{"password category without password", "new", "create", "PASSWORD", map[string]string{"notes": "n"}, true},
+		{"empty value", "new", "create", "PASSWORD", map[string]string{"password": ""}, true},
+		{"quote in title", `a"b`, "create", "", pw, true},
+		{"document unsupported", "new", "create", "DOCUMENT", pw, true},
+		{"update ok", "exists", "update", "", pw, false},
+		{"update missing", "new", "update", "", pw, true},
+		{"update ambiguous", "dup", "update", "", pw, true},
+	}
+	for _, tc := range cases {
+		err := c.PrecheckMutation("Agents", tc.title, tc.op, tc.cat, tc.fields)
+		var verr *ValidationError
+		if got := errors.As(err, &verr); got != tc.bad || (!tc.bad && err != nil) {
+			t.Errorf("%s: err = %v, want validation=%v", tc.name, err, tc.bad)
+		}
 	}
 }

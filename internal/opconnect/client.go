@@ -147,8 +147,8 @@ func (c *Client) CheckWriteCapability(vaultName string) CapabilityResult {
 	}
 }
 
-// GetItemByTitle fetches an item by vault ID and item title
-func (c *Client) GetItemByTitle(vaultID, itemTitle string) (*Item, error) {
+// findByTitle returns the summary of every item in a vault with exactly this title.
+func (c *Client) findByTitle(vaultID, itemTitle string) ([]Item, error) {
 	filter := url.QueryEscape(fmt.Sprintf(`title eq "%s"`, itemTitle))
 	url := fmt.Sprintf("%s/v1/vaults/%s/items?filter=%s", c.baseURL, vaultID, filter)
 
@@ -175,7 +175,15 @@ func (c *Client) GetItemByTitle(vaultID, itemTitle string) (*Item, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
+	return items, nil
+}
 
+// GetItemByTitle fetches an item by vault ID and item title
+func (c *Client) GetItemByTitle(vaultID, itemTitle string) (*Item, error) {
+	items, err := c.findByTitle(vaultID, itemTitle)
+	if err != nil {
+		return nil, err
+	}
 	if len(items) == 0 {
 		return nil, fmt.Errorf("item not found: %s", itemTitle)
 	}
@@ -387,9 +395,7 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 		method = http.MethodPut
 		endpoint += "/" + existing.ID
 	} else if operation == "create" {
-		if category == "" {
-			category = "SECURE_NOTE"
-		}
+		category = NormalizeCategory(category)
 		item = Item{Title: itemTitle, Vault: Vault{ID: vaultID}, Category: category}
 	} else {
 		return nil, fmt.Errorf("unsupported mutation operation %q", operation)
@@ -405,7 +411,7 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 			}
 		}
 		if !found {
-			item.Fields = append(item.Fields, newField(label, value))
+			item.Fields = append(item.Fields, newField(item.Category, label, value))
 		}
 	}
 	body, err := json.Marshal(item)
@@ -441,10 +447,22 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 type ValidationError struct{ Message string }
 
 func (e *ValidationError) Error() string {
-	return "unexpected status 400: " + e.Message
+	return "item rejected: " + e.Message
 }
 
-func newField(label, value string) Field {
+// purposeCategories lists the categories whose Connect templates require
+// (LOGIN) or validate (PASSWORD) fields by purpose. Other templates, such as
+// SERVER or DATABASE, already define username/password fields and reject a
+// second field carrying the same purpose.
+func purposeCategory(category string) string {
+	switch category {
+	case "LOGIN", "PASSWORD":
+		return category
+	}
+	return ""
+}
+
+func newField(category, label, value string) Field {
 	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(label))
 	field := Field{ID: label, Label: label, Type: "STRING", Value: value}
 	switch normalized {
@@ -458,12 +476,16 @@ func newField(label, value string) Field {
 		field.ID = "password"
 		field.Label = "password"
 		field.Type = "CONCEALED"
-		field.Purpose = "PASSWORD"
+		if purposeCategory(category) != "" {
+			field.Purpose = "PASSWORD"
+		}
 	case "username":
 		field.ID = "username"
 		field.Label = "username"
-		field.Purpose = "USERNAME"
-	case "passphrase", "secret", "token", "apikey", "privatekey":
+		if category == "LOGIN" {
+			field.Purpose = "USERNAME"
+		}
+	case "passphrase", "secret", "token", "apikey", "privatekey", "credential", "clientsecret", "secretkey", "accesstoken", "refreshtoken", "authtoken", "bearertoken":
 		field.Type = "CONCEALED"
 	case "url", "website", "loginurl":
 		field.Type = "URL"
@@ -721,4 +743,74 @@ func fuzzyScore(query, target string) (float64, string) {
 	}
 
 	return 0, ""
+}
+
+// NormalizeCategory upper-cases and trims a category, defaulting to SECURE_NOTE.
+func NormalizeCategory(category string) string {
+	category = strings.ToUpper(strings.TrimSpace(category))
+	if category == "" {
+		return "SECURE_NOTE"
+	}
+	return category
+}
+
+// PrecheckMutation rejects writes that Connect would refuse after the human
+// has already approved, so approvals are never spent on doomed requests.
+// Values are never included in returned messages.
+func (c *Client) PrecheckMutation(vaultName, title, operation, category string, values map[string]string) error {
+	bad := func(format string, a ...any) error {
+		return &ValidationError{Message: fmt.Sprintf(format, a...)}
+	}
+	if strings.TrimSpace(title) == "" {
+		return bad("item title is empty")
+	}
+	if strings.Contains(title, `"`) {
+		return bad("item titles containing a double quote cannot be looked up through Connect")
+	}
+	for label, value := range values {
+		if strings.TrimSpace(label) == "" {
+			return bad("field labels must not be empty")
+		}
+		if value == "" {
+			return bad("field %q has an empty value", label)
+		}
+	}
+	vault, err := c.ResolveVault(vaultName)
+	if err != nil {
+		return err
+	}
+	existing, err := c.findByTitle(vault.ID, title)
+	if err != nil {
+		return err
+	}
+	switch operation {
+	case "create":
+		category = NormalizeCategory(category)
+		if category == "DOCUMENT" || category == "CUSTOM" {
+			return bad("1Password Connect cannot create %s items", category)
+		}
+		if len(existing) > 0 {
+			return bad("an item titled %q already exists in this vault; use update", title)
+		}
+		if category == "PASSWORD" {
+			found := false
+			for label := range values {
+				if newField(category, label, "x").Purpose == "PASSWORD" {
+					found = true
+				}
+			}
+			if !found {
+				return bad("PASSWORD items require a non-empty \"password\" field")
+			}
+		}
+	case "update":
+		switch len(existing) {
+		case 0:
+			return bad("no item titled %q exists in this vault; use create", title)
+		case 1:
+		default:
+			return bad("%d items are titled %q; rename duplicates before updating", len(existing), title)
+		}
+	}
+	return nil
 }

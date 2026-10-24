@@ -207,6 +207,9 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Action = req.Mutation.Operation
+		if req.Mutation.Operation == "create" {
+			req.Mutation.Category = opconnect.NormalizeCategory(req.Mutation.Category)
+		}
 		capability := h.opClient.CheckWriteCapability(req.Vault)
 		if !capability.Allowed {
 			if notifyErr := h.tgClient.SendWriteBlocked(req, capability.Message); notifyErr != nil {
@@ -217,6 +220,15 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusForbidden
 			}
 			h.writeError(w, status, capability.Code, capability.Message)
+			return
+		}
+		if precheckErr := h.opClient.PrecheckMutation(req.Vault, req.SecretName, req.Mutation.Operation, req.Mutation.Category, req.Mutation.Fields); precheckErr != nil {
+			var verr *opconnect.ValidationError
+			if errors.As(precheckErr, &verr) {
+				h.writeError(w, http.StatusUnprocessableEntity, "validation", verr.Message)
+				return
+			}
+			h.writeError(w, http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval.")
 			return
 		}
 	}
