@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.5 (2026-10-24)
 
 ### Fixed
 - `write create` with category PASSWORD (and LOGIN) no longer fails after approval: `password` and `username` fields carry the Connect purposes the template requires (#11). Purposes are not sent for SERVER, DATABASE, EMAIL_ACCOUNT, or WIRELESS_ROUTER, which Connect rejects.
