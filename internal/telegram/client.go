@@ -3,10 +3,12 @@ package telegram
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -133,7 +135,7 @@ func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL
 
 	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("sending message: %w", err)
+		return 0, fmt.Errorf("sending message: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -310,7 +312,7 @@ func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, appro
 
 	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("sending message: %w", err)
+		return fmt.Errorf("sending message: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -368,7 +370,7 @@ func (c *Client) sendText(text string) error {
 	}
 	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("sending message: %w", err)
+		return fmt.Errorf("sending message: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
@@ -399,7 +401,7 @@ func (c *Client) AnswerCallbackQuery(callbackID, text string) error {
 
 	resp, err := c.httpClient.Post(c.baseURL+"/answerCallbackQuery", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
+		return fmt.Errorf("sending request: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -413,7 +415,7 @@ func (c *Client) GetUpdates(timeout int) ([]Update, error) {
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("fetching updates: %w", err)
+		return nil, fmt.Errorf("fetching updates: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -450,7 +452,7 @@ func (c *Client) GetUpdates(timeout int) ([]Update, error) {
 func (c *Client) DeleteWebhook() error {
 	resp, err := c.httpClient.Post(c.baseURL+"/deleteWebhook", "application/json", nil)
 	if err != nil {
-		return fmt.Errorf("deleting webhook: %w", err)
+		return fmt.Errorf("deleting webhook: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -535,7 +537,7 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 
 	resp, err := c.httpClient.Post(c.baseURL+"/editMessageText", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
+		return fmt.Errorf("sending request: %w", transportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -558,4 +560,14 @@ func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboar
 	}
 
 	return nil
+}
+
+// transportError drops the request URL from net/http errors. Bot API URLs
+// embed the bot token, so a raw *url.Error would leak it into server logs.
+func transportError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s Telegram Bot API: %w", urlErr.Op, urlErr.Err)
+	}
+	return err
 }

@@ -191,3 +191,19 @@ func TestUpdateApprovalRequestTreatsNotModifiedAsSuccess(t *testing.T) {
 		t.Fatalf("other Telegram errors must surface, got %v", err)
 	}
 }
+
+func TestTransportErrorsDoNotLeakBotToken(t *testing.T) {
+	const botToken = "123456:secret-bot-token"
+	client := New(botToken, 456)
+	client.baseURL = "http://127.0.0.1:1/bot" + botToken
+	_, err := client.GetUpdates(0)
+	if err == nil {
+		t.Fatal("expected a transport error from a closed port")
+	}
+	if strings.Contains(err.Error(), botToken) {
+		t.Fatalf("transport error leaked the bot token: %v", err)
+	}
+	if err := client.sendText("hello"); err == nil || strings.Contains(err.Error(), botToken) {
+		t.Fatalf("sendText error = %v", err)
+	}
+}
