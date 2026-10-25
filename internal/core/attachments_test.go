@@ -118,3 +118,13 @@ func TestWriteItemsSendsFileContentNotPath(t *testing.T) {
 		t.Fatalf("oversized file: code=%v err=%v", CodeOf(err), err)
 	}
 }
+
+// Attachment refusals must not look like network errors, which agents retry.
+func TestAttachmentRefusalsAreNotNetworkErrors(t *testing.T) {
+	for _, code := range []string{"attachments_unavailable", "attachment_unavailable", "attachment_too_large"} {
+		err := httpError(http.StatusServiceUnavailable, []byte(`{"error":"`+code+`","message":"no"}`))
+		if CodeOf(err) != ErrValidation {
+			t.Errorf("%s mapped to %s", code, CodeOf(err))
+		}
+	}
+}

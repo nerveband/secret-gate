@@ -211,7 +211,9 @@ func httpError(status int, body []byte) error {
 	var errResp errorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Message != "" {
 		switch errResp.Error {
-		case string(ErrValidation):
+		// Attachment refusals cannot succeed on retry as sent, so they are
+		// usage-class errors rather than network failures.
+		case string(ErrValidation), "attachment_unavailable", "attachment_too_large", "attachments_unavailable":
 			code = ErrValidation
 		case string(ErrVaultWriteUnavailable):
 			code = ErrVaultWriteUnavailable
