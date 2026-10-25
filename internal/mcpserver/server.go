@@ -9,6 +9,7 @@ import (
 
 	"github.com/johnuopini/secret-gate/internal/core"
 	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/passkey"
 	"github.com/johnuopini/secret-gate/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -76,8 +77,68 @@ type WriteItemInput struct {
 	Operation  string            `json:"operation" jsonschema:"create or update"`
 	Category   string            `json:"category,omitempty" jsonschema:"1Password category for new items; defaults to SECURE_NOTE"`
 	Fields     map[string]string `json:"fields" jsonschema:"field labels mapped to values to store"`
+	Files      []core.FileWrite  `json:"files,omitempty" jsonschema:"local files to attach"`
 	Reason     string            `json:"reason" jsonschema:"why this write is needed"`
 	Context    RequestContext    `json:"context,omitempty"`
+}
+
+type AttachFileInput struct {
+	SecretName string         `json:"secret_name" jsonschema:"item title"`
+	Vault      string         `json:"vault" jsonschema:"explicit vault name or ID"`
+	Operation  string         `json:"operation,omitempty" jsonschema:"update (default) to attach to an existing item, or create for a new item"`
+	Category   string         `json:"category,omitempty" jsonschema:"1Password category when creating; defaults to SECURE_NOTE"`
+	Path       string         `json:"path" jsonschema:"local path of the file to attach"`
+	Name       string         `json:"name,omitempty" jsonschema:"attachment name in 1Password; defaults to the file's base name"`
+	Reason     string         `json:"reason" jsonschema:"why this file is stored"`
+	Context    RequestContext `json:"context,omitempty"`
+}
+
+type ReadAttachmentInput struct {
+	SecretName string `json:"secret_name" jsonschema:"item whose attachment was approved with fields [\"file:<name>\"]"`
+	Vault      string `json:"vault,omitempty" jsonschema:"vault name (optional)"`
+	File       string `json:"file" jsonschema:"attachment name or ID, exactly as approved"`
+	EnvVar     string `json:"env_var,omitempty" jsonschema:"env var that receives the path of a mode-0600 temporary copy, deleted after the command; omit to use stdin"`
+	Stdin      bool   `json:"stdin,omitempty" jsonschema:"pipe the content to the command's stdin instead of a temporary file"`
+	Command    string `json:"command" jsonschema:"shell command to execute (runs via sh -c)"`
+	WorkingDir string `json:"working_dir,omitempty" jsonschema:"working directory for the command"`
+	TimeoutSec int    `json:"timeout_sec,omitempty" jsonschema:"command timeout in seconds (default 30)"`
+}
+
+type PasskeyArmInput struct {
+	CDP        string `json:"cdp" jsonschema:"Chrome DevTools endpoint on this machine: ws:// URL, http://127.0.0.1:port, or port (agent-browser: agent-browser get cdp-url)"`
+	PageURL    string `json:"page_url,omitempty" jsonschema:"substring of the tab URL"`
+	TargetID   string `json:"target_id,omitempty" jsonschema:"DevTools target ID of the tab"`
+	HoldMinute int    `json:"hold_minutes,omitempty" jsonschema:"how long the authenticator stays in the tab (default 10, max 30)"`
+}
+
+type PasskeyRegisterInput struct {
+	Session    string         `json:"session" jsonschema:"session ID from passkey_arm"`
+	SecretName string         `json:"secret_name" jsonschema:"title of the new 1Password item"`
+	Vault      string         `json:"vault" jsonschema:"explicit vault name or ID"`
+	Category   string         `json:"category,omitempty" jsonschema:"1Password category; defaults to SECURE_NOTE"`
+	Reason     string         `json:"reason" jsonschema:"why this passkey is stored"`
+	Context    RequestContext `json:"context,omitempty"`
+}
+
+type PasskeyLoadInput struct {
+	SecretName string `json:"secret_name" jsonschema:"approved and cached passkey item"`
+	Vault      string `json:"vault,omitempty" jsonschema:"vault name; needed to save the counter on release"`
+	CDP        string `json:"cdp" jsonschema:"Chrome DevTools endpoint on this machine: ws:// URL, http://127.0.0.1:port, or port"`
+	PageURL    string `json:"page_url,omitempty" jsonschema:"substring of the tab URL"`
+	TargetID   string `json:"target_id,omitempty" jsonschema:"DevTools target ID of the tab"`
+	HoldMinute int    `json:"hold_minutes,omitempty" jsonschema:"how long the authenticator stays in the tab (default 10, max 30)"`
+}
+
+type PasskeyReleaseInput struct {
+	Session     string         `json:"session" jsonschema:"session ID from passkey_arm or passkey_load"`
+	SaveCounter bool           `json:"save_counter,omitempty" jsonschema:"write the final sign count to the item (rides the follow-up approval right after registration)"`
+	Reason      string         `json:"reason,omitempty" jsonschema:"why the counter is written (with save_counter)"`
+	Context     RequestContext `json:"context,omitempty"`
+}
+
+type PasskeyOutput struct {
+	Passkey passkey.Info   `json:"passkey"`
+	Write   *RequestResult `json:"write,omitempty"`
 }
 
 type ReadFieldsInput struct {
@@ -164,12 +225,36 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 		return handleReadFields(ctx, dc, input)
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "write_item", Description: "Create or update a 1Password item after Telegram approval. Values are held only in server memory while pending and are never shown in Telegram or logs. An explicit vault is required."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "write_item", Description: "Create or update a 1Password item after Telegram approval. Values are held only in server memory while pending and are never shown in Telegram or logs. An explicit vault is required. Optional files (local paths) are attached; Telegram shows file names and sizes only."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
 		return handleWriteItem(ctx, pc, input)
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "write_items", Description: "Create or update up to 10 1Password items in one vault behind ONE Telegram approval. The approver sees item names and field labels, never values. Each item may appear once. Prefer this over several write_item calls when the values are known together."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemsInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "write_items", Description: "Create or update up to 10 1Password items in one vault behind ONE Telegram approval. The approver sees item names, field labels, and file names with sizes, never values. Each item may appear once and may attach local files. Prefer this over several write_item calls when the values are known together."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemsInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
 		return handleWriteItems(ctx, pc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "attach_file", Description: "Attach a local file to a 1Password item (update, the default) or to a new item (create) after Telegram approval. The file content is read here and sent to the server, never returned to the model. Telegram shows the file name and size only. Limit: 10 MiB per request."}, func(ctx context.Context, req *mcp.CallToolRequest, input AttachFileInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+		return handleAttachFile(ctx, pc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "read_attachment", Description: "Run a shell command with an approved attachment. Approve it first with request_secret(fields=[\"file:<name>\"]). With env_var the content is written to a mode-0600 temporary file whose path is in env_var and which is deleted after the command; with stdin=true it is piped to the command. The content is never returned; exact text copies are redacted from output."}, func(ctx context.Context, req *mcp.CallToolRequest, input ReadAttachmentInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {
+		return handleReadAttachment(ctx, dc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "passkey_arm", Description: "Add an empty WebAuthn virtual authenticator to a browser tab over Chrome DevTools before a site creates a passkey. Needs a DevTools endpoint on this machine (agent-browser: agent-browser get cdp-url). Then register on the site and call passkey_register."}, func(ctx context.Context, req *mcp.CallToolRequest, input PasskeyArmInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+		return handlePasskeyArm(dc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "passkey_register", Description: "Store the passkey a site registered on an armed session as a new 1Password item after one Telegram approval. The private key goes browser → Secret Gate → 1Password and is never returned. The authenticator stays in the tab so a sign-in can be tested."}, func(ctx context.Context, req *mcp.CallToolRequest, input PasskeyRegisterInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+		return handlePasskeyRegister(ctx, dc, pc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "passkey_load", Description: "Put an approved, cached passkey item (request_secret first) into a browser tab as a virtual authenticator so the agent can sign in. The key never enters model context. It stays for hold_minutes (default 10, max 30) or until passkey_release."}, func(ctx context.Context, req *mcp.CallToolRequest, input PasskeyLoadInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+		return handlePasskeyLoad(dc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "passkey_release", Description: "Remove the virtual authenticator from the tab. save_counter writes the final sign count to the item; right after passkey_register this rides the same-item follow-up approval."}, func(ctx context.Context, req *mcp.CallToolRequest, input PasskeyReleaseInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+		return handlePasskeyRelease(ctx, dc, pc, input)
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "get_otp", Description: "Generate the current MFA/OTP/TOTP/2FA code from a previously approved 1Password OTP field. These terms are interchangeable."}, func(ctx context.Context, req *mcp.CallToolRequest, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
@@ -299,7 +384,16 @@ func handleGetOTP(_ context.Context, dc FullDaemonClient, input GetOTPInput) (*m
 }
 
 func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
-	out, err := svc(nil, pc, Config{}).Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
+	s := svc(nil, pc, Config{})
+	var out *RequestResult
+	var err error
+	if len(input.Files) > 0 {
+		out, err = s.WriteItems(ctx, input.Vault, input.Reason, []core.ItemWrite{{
+			Item: input.SecretName, Operation: input.Operation, Category: input.Category, Fields: input.Fields, Files: input.Files,
+		}}, input.Context)
+	} else {
+		out, err = s.Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
+	}
 	if err != nil {
 		return coreError(err), RequestSecretOutput{}, nil
 	}
@@ -312,6 +406,94 @@ func handleWriteItems(ctx context.Context, pc ProxyClient, input WriteItemsInput
 		return coreError(err), RequestSecretOutput{}, nil
 	}
 	return nil, *out, nil
+}
+
+func handleAttachFile(ctx context.Context, pc ProxyClient, input AttachFileInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	operation := input.Operation
+	if operation == "" {
+		operation = "update"
+	}
+	out, err := svc(nil, pc, Config{}).WriteItems(ctx, input.Vault, input.Reason, []core.ItemWrite{{
+		Item: input.SecretName, Operation: operation, Category: input.Category,
+		Files: []core.FileWrite{{Name: input.Name, Path: input.Path}},
+	}}, input.Context)
+	if err != nil {
+		return coreError(err), RequestSecretOutput{}, nil
+	}
+	return nil, *out, nil
+}
+
+func handleReadAttachment(ctx context.Context, dc FullDaemonClient, input ReadAttachmentInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {
+	out, err := svc(dc, nil, Config{}).AttachmentExec(ctx, core.AttachmentExecRequest{
+		SecretName:   input.SecretName,
+		Vault:        input.Vault,
+		File:         input.File,
+		PathEnv:      input.EnvVar,
+		Stdin:        input.Stdin,
+		ShellCommand: input.Command,
+		WorkingDir:   input.WorkingDir,
+		Timeout:      time.Duration(input.TimeoutSec) * time.Second,
+	})
+	if err != nil {
+		return coreError(err), ExecWithSecretOutput{}, nil
+	}
+	return nil, ExecWithSecretOutput{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, SecretUsed: out.SecretUsed}, nil
+}
+
+func handlePasskeyArm(dc FullDaemonClient, input PasskeyArmInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+	info, err := svc(dc, nil, Config{}).PasskeyArm(core.PasskeyTarget{
+		Endpoint: input.CDP, PageURL: input.PageURL, TargetID: input.TargetID, Hold: time.Duration(input.HoldMinute) * time.Minute,
+	})
+	if err != nil {
+		return coreError(err), PasskeyOutput{}, nil
+	}
+	return nil, PasskeyOutput{Passkey: *info}, nil
+}
+
+func handlePasskeyRegister(ctx context.Context, dc FullDaemonClient, pc ProxyClient, input PasskeyRegisterInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+	if input.Reason == "" {
+		return toolError("reason is required"), PasskeyOutput{}, nil
+	}
+	s := svc(dc, pc, Config{})
+	info, write, err := s.PasskeyCollect(input.Session, input.SecretName, input.Vault, input.Category)
+	if err != nil {
+		return coreError(err), PasskeyOutput{}, nil
+	}
+	out, err := s.WriteItems(ctx, input.Vault, input.Reason, []core.ItemWrite{write}, input.Context)
+	if err != nil {
+		return coreError(err), PasskeyOutput{}, nil
+	}
+	return nil, PasskeyOutput{Passkey: *info, Write: out}, nil
+}
+
+func handlePasskeyLoad(dc FullDaemonClient, input PasskeyLoadInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+	info, err := svc(dc, nil, Config{}).PasskeyLoad(input.SecretName, input.Vault, core.PasskeyTarget{
+		Endpoint: input.CDP, PageURL: input.PageURL, TargetID: input.TargetID, Hold: time.Duration(input.HoldMinute) * time.Minute,
+	})
+	if err != nil {
+		return coreError(err), PasskeyOutput{}, nil
+	}
+	return nil, PasskeyOutput{Passkey: *info}, nil
+}
+
+func handlePasskeyRelease(ctx context.Context, dc FullDaemonClient, pc ProxyClient, input PasskeyReleaseInput) (*mcp.CallToolResult, PasskeyOutput, error) {
+	if input.SaveCounter && input.Reason == "" {
+		return toolError("reason is required with save_counter"), PasskeyOutput{}, nil
+	}
+	s := svc(dc, pc, Config{})
+	info, write, err := s.PasskeyRelease(input.Session, input.SaveCounter)
+	if err != nil {
+		return coreError(err), PasskeyOutput{}, nil
+	}
+	result := PasskeyOutput{Passkey: *info}
+	if write != nil {
+		out, err := s.WriteItems(ctx, info.Vault, input.Reason, []core.ItemWrite{*write}, input.Context)
+		if err != nil {
+			return coreError(err), result, nil
+		}
+		result.Write = out
+	}
+	return nil, result, nil
 }
 
 func handleExecWithSecret(ctx context.Context, dc FullDaemonClient, input ExecWithSecretInput) (*mcp.CallToolResult, ExecWithSecretOutput, error) {

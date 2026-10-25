@@ -1,6 +1,6 @@
 ---
 name: secret-gate
-description: Request and use 1Password items through Telegram approval. CLI-first with JSON envelopes and deterministic exit codes; also available as MCP tools. Supports arbitrary fields, secure notes, OTP codes, SSH keys, and approval-gated item writes.
+description: Request and use 1Password items through Telegram approval. CLI-first with JSON envelopes and deterministic exit codes; also available as MCP tools. Supports arbitrary fields, secure notes, OTP codes, SSH keys, file attachments, agent-owned passkeys, and approval-gated item writes.
 ---
 
 # Secret Gate
@@ -43,9 +43,9 @@ approval.
 ## Visibility classes — pick the narrowest
 
 - `metadata-only`: search, fields, request, daemon — never touches values.
-- `process-only`: `exec`, `ssh`, `otp exec` — value goes to a child
-  process env var; exact occurrences in output come back as
-  `[REDACTED:item/field]`.
+- `process-only`: `exec`, `ssh`, `otp exec`, `attachment exec`,
+  `passkey load`: the value goes to a child process or the browser;
+  exact occurrences in output come back as `[REDACTED:item/field]`.
 - `model-visible`: `item read --reveal`, `otp show --reveal` — the value
   enters your context. Requires the explicit `--reveal` flag.
 - `value-input`: `write create/update --stdin` — values are piped in,
@@ -124,6 +124,54 @@ already exists, `update` targets a missing or duplicated title, or the title
 contains a double quote. Categories are case-insensitive. Connect makes a
 new item visible to reads after a few seconds; wait before reading it back.
 
+## Attachments
+
+```bash
+# item fields lists attachments by name, size, and ID (never content)
+secret-gate item fields --item "release keys"
+
+# approve one attachment by naming it, then hand it to a command
+secret-gate request submit --item "release keys" --fields "file:release.jks" --reason "sign the release"
+secret-gate attachment exec --item "release keys" --file release.jks --env KEYSTORE -- ./gradlew assembleRelease
+secret-gate attachment exec --item "release keys" --file release.jks --stdin -- shasum -a 256
+
+# attach local files on create/update (or per item in write batch)
+echo '{"fields":{"note":"release keystore"},"files":[{"path":"./release.jks"}]}' \
+  | secret-gate write create --item "Android keystore" --vault "Infra" --reason "store the keystore" --stdin
+```
+
+`--env VAR` writes a mode-0600 temporary file in a private directory, puts
+its path in `VAR`, and deletes it when the command exits. Attachment
+content is never returned by `item read` or `read_item_fields`. The limit
+is 10 MiB per request. Attaching needs a 1Password service account on the
+server (Connect cannot upload); without one the write returns
+`attachments_unavailable` before any approval.
+
+## Passkeys (agent-owned)
+
+Secret Gate cannot use passkeys that 1Password itself saved. It can create
+and use its own passkeys through a Chrome DevTools endpoint on this machine
+(agent-browser: `agent-browser get cdp-url`). ego lite and Aside do not
+expose one.
+
+```bash
+CDP="$(agent-browser get cdp-url)"
+# register: arm the tab, click the site's "create passkey", then store it
+secret-gate passkey arm --cdp "$CDP" --page-url webauthn.io
+secret-gate passkey register --session 3f2a9c1d --item "webauthn.io passkey" --vault "AI Agents" --reason "save the agent's passkey"
+secret-gate passkey release --session 3f2a9c1d --save-counter --reason "store the sign count after the first sign-in"
+
+# sign in later: approve the item, load it, sign in on the site, release
+secret-gate request submit --item "webauthn.io passkey" --vault "AI Agents" --reason "sign in to webauthn.io"
+secret-gate passkey load --item "webauthn.io passkey" --vault "AI Agents" --cdp "$CDP" --page-url webauthn.io
+secret-gate passkey release --session 9b1c2d3e
+secret-gate passkey list
+```
+
+The key goes from Secret Gate into the browser over its own DevTools
+session and is never printed. A loaded passkey can sign in to its site
+until `passkey release` or `--hold` (default 10m, max 30m) ends.
+
 ## Daemon
 
 ```bash
@@ -144,7 +192,10 @@ hyphens, underscores. Interchangeable groups:
 `search_secrets` → `inspect_fields` → `request_secret` (with reason and
 narrow `fields`) → `exec_with_secret` / `ssh_with_secret` /
 `read_item_fields` / `get_otp` → `write_item` or `write_items` (batch) for
-writes. Same rules.
+writes. Attachments: `request_secret(fields=["file:<name>"])` →
+`read_attachment`; `attach_file` or `files` on `write_item(s)`. Passkeys:
+`passkey_arm` → `passkey_register` → `passkey_load` → `passkey_release`.
+Same rules.
 
 ## Do not
 
@@ -156,6 +207,7 @@ writes. Same rules.
   evade the approver; surface the denial to the user.
 - Do not parse human help text — use `schema` / `agent-context --json`.
 
-Passkeys are visible during inspection, but 1Password Connect cannot
-export a passkey private key or complete a WebAuthn ceremony. Use an
-interactive browser with the 1Password extension for passkey sign-in.
+Passkeys that 1Password itself saved are visible during inspection, but no
+1Password API (Connect, CLI, SDKs) can export their private key or complete
+a WebAuthn ceremony with them. Use the 1Password browser extension for
+those, or an agent-owned passkey as above.

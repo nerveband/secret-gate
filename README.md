@@ -137,6 +137,7 @@ Then run the `server` binary with the required environment variables set.
 | `WRITE_REMINDER_BEFORE` | No | `10m` | When to send the Telegram reminder for a pending write; `0` disables it |
 | `WRITE_WINDOW_TTL` | No | `15m` | Length of the "Approve + writes" window; `0` hides the button |
 | `WRITE_FOLLOWUP_TTL` | No | `15m` | How long updates to an item just written by the same requester ride on that approval; `0` disables it |
+| `OP_SERVICE_ACCOUNT_TOKEN` | No | unset | 1Password service account token used only to attach files (Connect has no upload endpoint). Needs read and write access to the target vaults. Without it, writes with files are refused before approval |
 
 ## Client Usage
 
@@ -211,6 +212,25 @@ and `Deny`. Pending writes wait up to an hour, get one reminder ten minutes
 before expiry, and the message changes to "Expired" when the request lapses.
 See [docs/write-ux.md](docs/write-ux.md) for what each approval covers.
 
+### Attachments
+
+`item fields` lists an item's attachments (name, size, ID). Approve one by
+naming it, then hand it to a command; the content never enters model
+context:
+
+```bash
+secret-gate request submit --item "release keys" --fields "file:release.jks" --reason "sign the release"
+secret-gate attachment exec --item "release keys" --file release.jks --env KEYSTORE -- ./gradlew assembleRelease
+secret-gate attachment exec --item "release keys" --file release.jks --stdin -- shasum -a 256
+```
+
+`--env` writes a mode-`0600` temporary file in a private directory and
+deletes it when the command exits. To attach files, add
+`"files":[{"path":"./release.jks"}]` to the stdin JSON of `write create`,
+`write update`, or each `write batch` item. Telegram shows file names and
+sizes, never content. Limit: 10 MiB per request. Attaching needs
+`OP_SERVICE_ACCOUNT_TOKEN` on the server; reading uses Connect.
+
 Managed SSH commands use an isolated OpenSSH configuration (`-F /dev/null`) with explicit host, port, identity, batch mode, and host-key options. User-level `Include`, `ProxyJump`, and host aliases are intentionally not applied; pass the concrete destination to `--host`.
 
 ### From the server
@@ -262,18 +282,21 @@ Add to `~/.claude/settings.json` under `permissions.allow`:
 "mcp__secret-gate__*"
 ```
 
-**MCP Tools:**
-
 | Tool | Description |
 |------|-------------|
 | `search_secrets` | Search 1Password items by name |
-| `inspect_fields` | List field names/types without values |
-| `request_secret` | Request access with Telegram approval (returns status, not the value) |
-| `read_item_fields` | Read any approved field by label, ID, or `section.label`; omit fields to read the whole item |
+| `inspect_fields` | List field names/types and attachments without values |
+| `request_secret` | Request access with Telegram approval (returns status, not the value); name attachments as `file:<name>` |
+| `read_item_fields` | Read any approved field by label, ID, or `section.label`; omit fields to read the whole item (never attachments) |
 | `get_otp` | Generate the current MFA/OTP/TOTP/2FA code from an approved OTP field |
-| `write_item` | Create or update a 1Password item after Telegram approval |
+| `write_item` | Create or update a 1Password item after Telegram approval, optionally attaching local files |
+| `write_items` | Up to 10 creates or updates behind one approval |
+| `attach_file` | Attach a local file to an item after Telegram approval |
+| `read_attachment` | Run a command with an approved attachment as a temporary file or on stdin |
 | `exec_with_secret` | Run a command with a secret injected as an env var |
 | `ssh_with_secret` | SSH to a host using an approved SSH key |
+| `passkey_arm` / `passkey_register` | Capture a passkey a site registers in a browser tab and store it as an item |
+| `passkey_load` / `passkey_release` | Put an approved passkey into a browser tab for sign-in, then remove it |
 | `daemon_status` | Check cache daemon status |
 
 **Example flow:**
@@ -326,7 +349,34 @@ Telegram keeps the full request narrative after a decision. Approved, denied, an
 
 ### Passkeys
 
-Secret Gate reports passkey fields during inspection, but 1Password Connect cannot perform a WebAuthn ceremony or export a passkey private key. Passkey sign-in still requires the 1Password browser extension or app on an interactive device. Secret Gate returns this boundary instead of exposing passkey material or claiming a login succeeded.
+Passkeys that 1Password itself saved cannot be used through any 1Password
+developer API: Connect, the 1Password CLI, and the SDKs cannot export their
+private key or perform a WebAuthn ceremony (sources in
+[docs/passkeys-attachments.md](docs/passkeys-attachments.md)). Those still
+need the 1Password browser extension.
+
+Secret Gate can create and use its own passkeys instead. The local daemon
+opens a Chrome DevTools session to a tab of a browser that exposes a
+DevTools endpoint on this machine (for example agent-browser:
+`agent-browser get cdp-url`) and adds a WebAuthn virtual authenticator:
+
+```bash
+CDP="$(agent-browser get cdp-url)"
+secret-gate passkey arm --cdp "$CDP" --page-url webauthn.io            # then register on the site
+secret-gate passkey register --session <id> --item "webauthn.io passkey" --vault "AI Agents" --reason "save the agent's passkey"
+secret-gate passkey release --session <id>
+
+secret-gate request submit --item "webauthn.io passkey" --vault "AI Agents" --reason "sign in"
+secret-gate passkey load --item "webauthn.io passkey" --vault "AI Agents" --cdp "$CDP" --page-url webauthn.io   # then sign in
+secret-gate passkey release --session <id>
+```
+
+The item stores `passkey credential id`, `passkey private key`
+(concealed), `passkey rp id`, `passkey user handle`, and
+`passkey sign count`. The private key travels 1Password → daemon → browser
+and is never printed. A loaded passkey stays usable for `--hold` (default
+10 minutes, maximum 30) or until released. ego lite and Aside do not expose
+a DevTools endpoint and cannot be used for this.
 
 ### Skill Files (fallback)
 
@@ -403,7 +453,9 @@ For detailed request/response schemas, see the OpenAPI spec at `/openapi.json` o
 
 - **Memory-only cache.** Cached secret values stay in the daemon process. SSH-agent integration uses a mode-`0600` temporary private-key file because `ssh-add` accepts a path; the file is removed immediately after `ssh-add` returns. If `ssh-add` fails, `ssh_with_secret` uses another short-lived mode-`0600` file with `ssh -i` and removes it when SSH exits.
 - **Controlled agent visibility.** `exec_with_secret` and `ssh_with_secret` keep values out of agent context. `read_item_fields` and `get_otp` return only values covered by the approved item/field request because some tasks require the agent to read them.
-- **Approval-gated writes.** Create and update values stay in server memory while pending, are omitted from Telegram and logs, are sent to 1Password only after approval, and are dropped from memory once written, denied, or expired. Telegram shows item names and field labels so the approver knows what is being stored.
+- **Approval-gated writes.** Create and update values stay in server memory while pending, are omitted from Telegram and logs, are sent to 1Password only after approval, and are dropped from memory once written, denied, or expired. Telegram shows item names and field labels so the approver knows what is being stored. Attached files follow the same rules; Telegram shows file names and sizes only.
+- **Attachments stay out of model context.** Attachment content is released only when the request names it (`file:<name>`), is cached in daemon memory like other values, is never returned by `item read` or `read_item_fields`, and reaches commands as a mode-`0600` temporary file that is deleted afterwards, or on stdin.
+- **Passkeys are held, not printed.** Passkey keys go only from the daemon to a loopback DevTools endpoint and the tab's virtual authenticator, which is removed on release or after the hold time. Anything else with DevTools access to the same browser could read a loaded key, so the browser endpoint must be trusted like the agent itself.
 - **Scoped write grants.** Writes never ride on the read window. A write is approved by a tap, by an "Approve + writes" window (new items only, same machine, requester IP, Paseo agent ID, and vault, revocable from Telegram), or by a same-item follow-up grant (updates to an item that requester just wrote). Each auto-approved write posts a Telegram audit message, and the write falls back to a normal approval if that message cannot be sent. Grants are in memory and end on server restart. See [docs/write-ux.md](docs/write-ux.md).
 - **Unix socket IPC.** The daemon listens on a Unix socket with `0600` permissions, accessible only to the owning user.
 - **SSH agent integration.** SSH keys are added to ssh-agent with a TTL that matches the cache expiry, so they are automatically removed.

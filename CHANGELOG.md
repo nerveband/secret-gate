@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.0 (2026-10-25)
+
+File attachments and agent-owned passkeys. Research, design, and threat model: [docs/passkeys-attachments.md](docs/passkeys-attachments.md).
+
+### Added
+- Attachments in `item fields` / `inspect_fields`: name, size, and ID, never content.
+- Read an attachment by naming it in a request (`--fields "file:<name>"`); Telegram shows "📎 name (size)". `attachment exec` (CLI) and `read_attachment` (MCP) hand it to a command as a mode-0600 temporary file (path in `--env VAR`, deleted when the command exits) or on stdin. Attachment content is never returned by `item read` or `read_item_fields`.
+- Attach files on `write create`, `write update`, and `write batch` (`"files":[{"path":...}]` in the stdin JSON), `write_item`/`write_items` (`files`), and `attach_file` (MCP). Telegram shows file names and sizes only. Limit 10 MiB per request. A failed upload resumes at that file on retry without creating the item twice.
+- Uploads use the 1Password Go SDK with a service account (`OP_SERVICE_ACCOUNT_TOKEN`), because 1Password Connect has no upload endpoint. Without the token, writes with files return `attachments_unavailable` before any approval.
+- Agent-owned passkeys over the Chrome DevTools WebAuthn domain: `passkey arm`, `passkey register`, `passkey load`, `passkey release`, `passkey list` (CLI) and `passkey_arm`, `passkey_register`, `passkey_load`, `passkey_release` (MCP). The local daemon holds its own DevTools session to the tab; the private key goes 1Password → daemon → browser and is never printed. Loopback DevTools endpoints only. Loaded passkeys start at a sign count of the current Unix time, so later sign-ins need no counter write; `passkey release --save-counter` stores the count and rides the same-item follow-up approval right after registration.
+
+### Changed
+- Connect updates send the item's `files` array back unchanged instead of omitting it from the replacement item.
+- The local daemon accepts socket messages up to 32 MiB (was 64 KiB) so cached attachments fit, and stays running while a passkey is held.
+
 ## v0.6.0 (2026-10-25)
 
 Fewer Telegram taps for writes without letting writes approve silently. Design and threat model: [docs/write-ux.md](docs/write-ux.md).

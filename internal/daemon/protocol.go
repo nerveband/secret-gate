@@ -1,5 +1,7 @@
 package daemon
 
+import "github.com/johnuopini/secret-gate/internal/passkey"
+
 const (
 	CmdGet     = "get"
 	CmdStore   = "store"
@@ -9,7 +11,31 @@ const (
 	CmdStop    = "stop"
 	CmdWatch   = "watch"
 	CmdUnwatch = "unwatch"
+	CmdPasskey = "passkey"
 )
+
+// Passkey actions handled by CmdPasskey.
+const (
+	PasskeyArm     = "arm"
+	PasskeyLoad    = "load"
+	PasskeyCollect = "collect"
+	PasskeyRelease = "release"
+	PasskeyList    = "list"
+)
+
+// PasskeyRequest asks the daemon to hold, read, or release a virtual
+// authenticator. Credential carries key material for load only.
+type PasskeyRequest struct {
+	Action     string              `json:"action"`
+	Session    string              `json:"session,omitempty"`
+	Endpoint   string              `json:"endpoint,omitempty"`
+	PageURL    string              `json:"page_url,omitempty"`
+	TargetID   string              `json:"target_id,omitempty"`
+	HoldSec    int                 `json:"hold_seconds,omitempty"`
+	Item       string              `json:"item,omitempty"`
+	Vault      string              `json:"vault,omitempty"`
+	Credential *passkey.Credential `json:"credential,omitempty"`
+}
 
 type ActivationSpec struct {
 	Kind           string   `json:"kind,omitempty"` // "paseo" | "command" | "none"
@@ -48,6 +74,7 @@ type Request struct {
 	TTLSeconds int               `json:"ttl_seconds,omitempty"`
 	Token      string            `json:"token,omitempty"`
 	Watch      *WatchSpec        `json:"watch,omitempty"`
+	Passkey    *PasskeyRequest   `json:"passkey,omitempty"`
 }
 
 type Response struct {
@@ -58,12 +85,20 @@ type Response struct {
 	Watches    []WatchInfo       `json:"watches,omitempty"`
 	Status     *DaemonStatus     `json:"status,omitempty"`
 	WatchState string            `json:"watch_state,omitempty"` // "registered" | "duplicate"
+	Passkeys   []passkey.Info    `json:"passkeys,omitempty"`
+	// Credential is returned by collect only, to the requesting client.
+	Credential *passkey.Credential `json:"credential,omitempty"`
 }
 
+// maxMessageBytes bounds one socket message. Cached attachments travel as
+// base64 field values, so this must exceed the 10 MiB attachment limit.
+const maxMessageBytes = 32 << 20
+
 type DaemonStatus struct {
-	Uptime     string `json:"uptime"`
-	EntryCount int    `json:"entry_count"`
-	WatchCount int    `json:"watch_count,omitempty"`
-	SocketPath string `json:"socket_path"`
-	PID        int    `json:"pid"`
+	Uptime       string `json:"uptime"`
+	EntryCount   int    `json:"entry_count"`
+	WatchCount   int    `json:"watch_count,omitempty"`
+	PasskeyCount int    `json:"passkey_count,omitempty"`
+	SocketPath   string `json:"socket_path"`
+	PID          int    `json:"pid"`
 }

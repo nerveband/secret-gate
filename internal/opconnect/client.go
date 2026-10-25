@@ -23,15 +23,27 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// Item represents a 1Password item
+// Item represents a 1Password item. Files are kept so an update sends back
+// the item's attachments unchanged.
 type Item struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
 	Vault    Vault     `json:"vault"`
 	Fields   []Field   `json:"fields"`
+	Files    []File    `json:"files,omitempty"`
 	Version  int       `json:"version"`
 	Category string    `json:"category,omitempty"`
 	Sections []Section `json:"sections,omitempty"`
+}
+
+// File is an attachment as Connect lists it (Item: File object). Content is
+// never requested inline; it is downloaded from the file content endpoint.
+type File struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Size        int64    `json:"size"`
+	ContentPath string   `json:"content_path,omitempty"`
+	Section     *Section `json:"section,omitempty"`
 }
 
 type Section struct {
@@ -291,8 +303,24 @@ type FieldInfo struct {
 	Reference string `json:"reference,omitempty"`
 }
 
-// GetItemFields returns field metadata for an item without values
-func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string, string, error) {
+// FileInfo is attachment metadata: name, size, and ID, never content.
+type FileInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Section string `json:"section,omitempty"`
+}
+
+// ItemMeta describes an item without any values.
+type ItemMeta struct {
+	Vault  string
+	Title  string
+	Fields []FieldInfo
+	Files  []FileInfo
+}
+
+// GetItemFields returns field and attachment metadata for an item without values
+func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 	var item *Item
 	var actualVault, actualTitle string
 
@@ -300,10 +328,10 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 		// Cross-vault search
 		results, err := c.SearchSecrets(itemTitle, 5)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("searching secrets: %w", err)
+			return nil, fmt.Errorf("searching secrets: %w", err)
 		}
 		if len(results) == 0 {
-			return nil, "", "", fmt.Errorf("item not found: %s", itemTitle)
+			return nil, fmt.Errorf("item not found: %s", itemTitle)
 		}
 		best := results[0]
 		if best.MatchType != "exact" && best.MatchType != "prefix" && best.Score < 0.8 {
@@ -311,11 +339,11 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 			for _, r := range results {
 				suggestions = append(suggestions, r.Item.Title)
 			}
-			return nil, "", "", fmt.Errorf("no exact match for '%s'. Did you mean: %s", itemTitle, strings.Join(suggestions, ", "))
+			return nil, fmt.Errorf("no exact match for '%s'. Did you mean: %s", itemTitle, strings.Join(suggestions, ", "))
 		}
 		item, err = c.GetItem(best.VaultID, best.Item.ID)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("getting item: %w", err)
+			return nil, fmt.Errorf("getting item: %w", err)
 		}
 		actualVault = best.VaultName
 		actualTitle = best.Item.Title
@@ -323,7 +351,7 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 		// Direct vault lookup
 		vaults, err := c.GetVaults()
 		if err != nil {
-			return nil, "", "", fmt.Errorf("listing vaults: %w", err)
+			return nil, fmt.Errorf("listing vaults: %w", err)
 		}
 		var vaultID string
 		for _, v := range vaults {
@@ -334,11 +362,11 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 			}
 		}
 		if vaultID == "" {
-			return nil, "", "", fmt.Errorf("vault not found: %s", vaultName)
+			return nil, fmt.Errorf("vault not found: %s", vaultName)
 		}
 		item, err = c.GetItemByTitle(vaultID, itemTitle)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("getting item: %w", err)
+			return nil, fmt.Errorf("getting item: %w", err)
 		}
 		actualTitle = item.Title
 	}
@@ -361,7 +389,20 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) ([]FieldInfo, string
 		}
 	}
 
-	return fields, actualVault, actualTitle, nil
+	sectionLabels := make(map[string]string, len(item.Sections))
+	for _, s := range item.Sections {
+		sectionLabels[s.ID] = s.Label
+	}
+	var files []FileInfo
+	for _, f := range item.Files {
+		section := ""
+		if f.Section != nil {
+			section = sectionLabels[f.Section.ID]
+		}
+		files = append(files, FileInfo{ID: f.ID, Name: f.Name, Size: f.Size, Section: section})
+	}
+
+	return &ItemMeta{Vault: actualVault, Title: actualTitle, Fields: fields, Files: files}, nil
 }
 
 // PutItem creates or replaces an item through 1Password Connect. For updates,
@@ -443,6 +484,90 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 	return &saved, nil
 }
 
+// ResolveItem returns the full item with this exact title in a vault.
+func (c *Client) ResolveItem(vaultName, title string) (*Item, error) {
+	vault, err := c.ResolveVault(vaultName)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetItemByTitle(vault.ID, title)
+}
+
+// FindFile selects one attachment by exact name, then by file ID. Several
+// attachments sharing the name must be addressed by ID.
+func FindFile(files []FileInfo, selector string) (FileInfo, error) {
+	var named []FileInfo
+	for _, f := range files {
+		if f.Name == selector {
+			named = append(named, f)
+		}
+	}
+	switch len(named) {
+	case 1:
+		return named[0], nil
+	case 0:
+	default:
+		ids := make([]string, 0, len(named))
+		for _, f := range named {
+			ids = append(ids, f.ID)
+		}
+		return FileInfo{}, fmt.Errorf("%d attachments are named %q; use one of the file IDs: %s", len(named), selector, strings.Join(ids, ", "))
+	}
+	for _, f := range files {
+		if f.ID == selector {
+			return f, nil
+		}
+	}
+	return FileInfo{}, fmt.Errorf("no attachment named %q", selector)
+}
+
+// ReadFile downloads one attachment through the Connect file content
+// endpoint. Files larger than limit are refused before and while reading.
+func (c *Client) ReadFile(vaultName, itemTitle, selector string, limit int64) (FileInfo, []byte, error) {
+	vault, err := c.ResolveVault(vaultName)
+	if err != nil {
+		return FileInfo{}, nil, err
+	}
+	item, err := c.GetItemByTitle(vault.ID, itemTitle)
+	if err != nil {
+		return FileInfo{}, nil, err
+	}
+	infos := make([]FileInfo, 0, len(item.Files))
+	for _, f := range item.Files {
+		infos = append(infos, FileInfo{ID: f.ID, Name: f.Name, Size: f.Size})
+	}
+	file, err := FindFile(infos, selector)
+	if err != nil {
+		return FileInfo{}, nil, err
+	}
+	if file.Size > limit {
+		return file, nil, fmt.Errorf("attachment %q is %d bytes, over the %d byte limit", file.Name, file.Size, limit)
+	}
+	endpoint := fmt.Sprintf("%s/v1/vaults/%s/items/%s/files/%s/content", c.baseURL, vault.ID, item.ID, url.PathEscape(file.ID))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return file, nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return file, nil, fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return file, nil, fmt.Errorf("unexpected status %d downloading attachment", resp.StatusCode)
+	}
+	content, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return file, nil, fmt.Errorf("reading attachment: %w", err)
+	}
+	if int64(len(content)) > limit {
+		return file, nil, fmt.Errorf("attachment %q is over the %d byte limit", file.Name, limit)
+	}
+	file.Size = int64(len(content))
+	return file, content, nil
+}
+
 // ValidationError is a 1Password Connect 400 rejecting an item as invalid.
 type ValidationError struct{ Message string }
 
@@ -485,7 +610,7 @@ func newField(category, label, value string) Field {
 		if category == "LOGIN" {
 			field.Purpose = "USERNAME"
 		}
-	case "passphrase", "secret", "token", "apikey", "privatekey", "credential", "clientsecret", "secretkey", "accesstoken", "refreshtoken", "authtoken", "bearertoken":
+	case "passphrase", "secret", "token", "apikey", "privatekey", "credential", "clientsecret", "secretkey", "accesstoken", "refreshtoken", "authtoken", "bearertoken", "passkeyprivatekey":
 		field.Type = "CONCEALED"
 	case "url", "website", "loginurl":
 		field.Type = "URL"

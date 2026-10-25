@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/autosession"
@@ -10,8 +11,10 @@ import (
 	"github.com/johnuopini/secret-gate/internal/handlers"
 	"github.com/johnuopini/secret-gate/internal/logger"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
+	"github.com/johnuopini/secret-gate/internal/opsdk"
 	"github.com/johnuopini/secret-gate/internal/store"
 	"github.com/johnuopini/secret-gate/internal/telegram"
+	"github.com/johnuopini/secret-gate/internal/version"
 )
 
 func main() {
@@ -35,6 +38,11 @@ func main() {
 
 	// Create HTTP handler
 	h := handlers.New(requestStore, opClient, tgClient, cfg, sessionStore)
+	attachments := "disabled (no OP_SERVICE_ACCOUNT_TOKEN)"
+	if token := strings.TrimSpace(cfg.OPServiceAccountToken); token != "" {
+		h.SetFileAttacher(opsdk.New(token, version.Version))
+		attachments = "enabled"
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -90,6 +98,7 @@ func main() {
 		"write_window_ttl", cfg.WriteWindowTTL.String(),
 		"write_followup_ttl", cfg.WriteFollowUpTTL.String(),
 		"write_reminder_before", cfg.WriteReminderBefore.String(),
+		"file_uploads", attachments,
 	))
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

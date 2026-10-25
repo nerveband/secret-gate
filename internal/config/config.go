@@ -15,6 +15,9 @@ type Config struct {
 	// 1Password Connect settings
 	OPConnectHost  string
 	OPConnectToken string
+	// OPServiceAccountToken enables file uploads through the 1Password SDK.
+	// Connect has no upload endpoint; without this token attaching is refused.
+	OPServiceAccountToken string
 
 	// Telegram settings
 	TelegramBotToken string
@@ -41,15 +44,16 @@ type Config struct {
 // Load reads configuration from environment variables
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:             getEnvDefault("PORT", "8080"),
-		OPConnectHost:    os.Getenv("OP_CONNECT_HOST"),
-		OPConnectToken:   readSecretOrEnv("op_connect_token", "OP_CONNECT_TOKEN"),
-		TelegramBotToken: readSecretOrEnv("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
-		WebhookBaseURL:   os.Getenv("WEBHOOK_BASE_URL"),
-		RequestTTL:       getDurationDefault("REQUEST_TTL", 15*time.Minute),
-		CleanupInterval:  getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
-		AutoApproveTTL:   getDurationDefault("AUTO_APPROVE_TTL", 30*time.Minute),
-		LongPollMaxWait:  getDurationDefault("LONG_POLL_MAX_WAIT", 25*time.Second),
+		Port:                  getEnvDefault("PORT", "8080"),
+		OPConnectHost:         os.Getenv("OP_CONNECT_HOST"),
+		OPConnectToken:        readSecretOrEnv("op_connect_token", "OP_CONNECT_TOKEN"),
+		OPServiceAccountToken: readSecretOrEnv("op_service_account_token", "OP_SERVICE_ACCOUNT_TOKEN"),
+		TelegramBotToken:      readSecretOrEnv("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
+		WebhookBaseURL:        os.Getenv("WEBHOOK_BASE_URL"),
+		RequestTTL:            getDurationDefault("REQUEST_TTL", 15*time.Minute),
+		CleanupInterval:       getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
+		AutoApproveTTL:        getDurationDefault("AUTO_APPROVE_TTL", 30*time.Minute),
+		LongPollMaxWait:       getDurationDefault("LONG_POLL_MAX_WAIT", 25*time.Second),
 
 		WriteRequestTTL:     getDurationDefault("WRITE_REQUEST_TTL", time.Hour),
 		WriteWindowTTL:      getDurationDefault("WRITE_WINDOW_TTL", 15*time.Minute),

@@ -33,6 +33,12 @@ type AdminDaemonClient interface {
 	StopDaemon() error
 }
 
+// PasskeyDaemonClient runs passkey actions in the local daemon, which holds
+// the DevTools session while a virtual authenticator is in use.
+type PasskeyDaemonClient interface {
+	Passkey(req daemon.PasskeyRequest) (*daemon.Response, error)
+}
+
 // --- Proxy interfaces ---
 
 // ProxyClient provides blocking HTTP proxy access to the secret-gate
@@ -60,6 +66,15 @@ type ItemWrite struct {
 	Operation string            `json:"operation"`
 	Category  string            `json:"category,omitempty"`
 	Fields    map[string]string `json:"fields"`
+	Files     []FileWrite       `json:"files,omitempty" jsonschema:"local files to attach to the item"`
+}
+
+// FileWrite is a local file to attach. Path is read by the client; only the
+// content travels to the server, and it never enters model context.
+type FileWrite struct {
+	Name    string `json:"name,omitempty" jsonschema:"attachment name in 1Password; defaults to the file's base name"`
+	Path    string `json:"path" jsonschema:"local path of the file to attach"`
+	Content []byte `json:"-"`
 }
 
 // WriteClient submits one approval for one or more item writes in a vault.
@@ -110,11 +125,20 @@ type RequestContext struct {
 	PaseoAgentID string `json:"paseo_agent_id,omitempty" jsonschema:"optional Paseo agent ID for push activation"`
 }
 
+// AttachmentInfo is attachment metadata: name, size, and ID, never content.
+type AttachmentInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Section string `json:"section,omitempty"`
+}
+
 // FieldsResult holds the result of inspecting fields.
 type FieldsResult struct {
-	SecretName string      `json:"secret_name"`
-	VaultName  string      `json:"vault_name"`
-	Fields     []FieldInfo `json:"fields"`
+	SecretName string           `json:"secret_name"`
+	VaultName  string           `json:"vault_name"`
+	Fields     []FieldInfo      `json:"fields"`
+	Files      []AttachmentInfo `json:"files,omitempty"`
 }
 
 // RequestResult holds the result of a secret request.

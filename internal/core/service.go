@@ -124,16 +124,28 @@ func (s *Service) CachedFields(secretName, vault string) (map[string]string, err
 	return fields, nil
 }
 
+// ReadFields returns approved field values for model context. Attachments
+// are never returned here; they reach commands only through AttachmentExec.
 func (s *Service) ReadFields(secretName, vault string, want []string) (map[string]string, error) {
 	values, err := s.CachedFields(secretName, vault)
 	if err != nil {
 		return nil, err
 	}
 	if len(want) == 0 {
-		return values, nil
+		out := make(map[string]string, len(values))
+		for name, value := range values {
+			if !strings.HasPrefix(name, AttachmentPrefix) {
+				out[name] = value
+			}
+		}
+		return out, nil
 	}
 	out := make(map[string]string, len(want))
 	for _, name := range want {
+		if file, ok := strings.CutPrefix(name, AttachmentPrefix); ok {
+			return nil, E(ErrValidation, "attachment content is never returned to model context",
+				fmt.Sprintf("run: secret-gate attachment exec --item %q --file %q --env FILE_PATH -- <command>", secretName, file))
+		}
 		actual, value, ok := ResolveField(values, name)
 		if !ok {
 			return nil, E(ErrNotFound, fmt.Sprintf("field %q is not available", name),
@@ -200,6 +212,10 @@ func itemRedactor(secretName string, values map[string]string) *Redactor {
 func (s *Service) Exec(ctx context.Context, req ExecRequest) (*ExecOutcome, error) {
 	if req.Field == "" {
 		return nil, E(ErrValidation, "field is required", "pass --field <label>")
+	}
+	if file, ok := strings.CutPrefix(req.Field, AttachmentPrefix); ok {
+		return nil, E(ErrValidation, "attachments run through attachment exec, not exec",
+			fmt.Sprintf("run: secret-gate attachment exec --item %q --file %q --env FILE_PATH -- <command>", req.SecretName, file))
 	}
 	if req.EnvVar == "" {
 		return nil, E(ErrValidation, "env var name is required", "pass --env <NAME>")
@@ -392,8 +408,8 @@ func (s *Service) writeClient(vault, reason string, items []ItemWrite) (WriteCli
 	}
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
-		if item.Item == "" || len(item.Fields) == 0 {
-			return nil, E(ErrValidation, "every item needs a title and at least one field", "")
+		if item.Item == "" || (len(item.Fields) == 0 && len(item.Files) == 0) {
+			return nil, E(ErrValidation, "every item needs a title and at least one field or file", "")
 		}
 		if item.Operation != "create" && item.Operation != "update" {
 			return nil, E(ErrValidation, fmt.Sprintf("operation must be create or update, got %q", item.Operation), "")
@@ -402,6 +418,9 @@ func (s *Service) writeClient(vault, reason string, items []ItemWrite) (WriteCli
 			return nil, E(ErrValidation, fmt.Sprintf("%q appears twice; merge its fields into one entry", item.Item), "")
 		}
 		seen[item.Item] = true
+	}
+	if err := loadFiles(items); err != nil {
+		return nil, err
 	}
 	wc, ok := s.Proxy.(WriteClient)
 	if !ok {

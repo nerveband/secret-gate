@@ -52,16 +52,17 @@ func (f *fakeTelegram) SendWindowRevoked(writegrant.Window, string, int) error {
 
 // fakeConnect is a minimal in-memory 1Password Connect for one vault.
 type fakeConnect struct {
-	mu     sync.Mutex
-	items  map[string]opconnect.Item // by ID
-	writes []string                  // "create:title" / "update:title"
-	failOn string                    // title whose write returns 500
+	mu      sync.Mutex
+	items   map[string]opconnect.Item // by ID
+	writes  []string                  // "create:title" / "update:title"
+	failOn  string                    // title whose write returns 500
+	content map[string][]byte         // attachment content by file ID
 }
 
 var titleFilter = regexp.MustCompile(`title eq "(.*)"`)
 
 func newFakeConnect(t *testing.T, existing ...string) (*fakeConnect, *httptest.Server) {
-	fc := &fakeConnect{items: map[string]opconnect.Item{}}
+	fc := &fakeConnect{items: map[string]opconnect.Item{}, content: map[string][]byte{}}
 	for _, title := range existing {
 		id := fmt.Sprintf("item-%d", len(fc.items))
 		fc.items[id] = opconnect.Item{ID: id, Title: title, Vault: opconnect.Vault{ID: "vid"}, Category: "SECURE_NOTE"}
@@ -98,6 +99,15 @@ func newFakeConnect(t *testing.T, existing ...string) (*fakeConnect, *httptest.S
 			fc.writes = append(fc.writes, "create:"+item.Title)
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(item)
+		case strings.HasSuffix(r.URL.Path, "/content") && strings.Contains(r.URL.Path, "/files/"):
+			parts := strings.Split(r.URL.Path, "/")
+			data, ok := fc.content[parts[len(parts)-2]]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(data)
 		case strings.HasPrefix(r.URL.Path, "/v1/vaults/vid/items/"):
 			id := strings.TrimPrefix(r.URL.Path, "/v1/vaults/vid/items/")
 			item, ok := fc.items[id]

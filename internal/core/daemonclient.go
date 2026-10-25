@@ -16,6 +16,7 @@ type RealDaemonClient struct {
 }
 
 var _ AdminDaemonClient = (*RealDaemonClient)(nil)
+var _ PasskeyDaemonClient = (*RealDaemonClient)(nil)
 
 // NewRealDaemonClient creates a daemon client with the default 1h TTL.
 func NewRealDaemonClient() *RealDaemonClient {
@@ -72,6 +73,9 @@ func (r *RealDaemonClient) Unwatch(token string) error {
 func (r *RealDaemonClient) List() ([]daemon.CacheEntryInfo, error) { return r.client.List() }
 func (r *RealDaemonClient) Flush() error                           { return r.client.Flush() }
 func (r *RealDaemonClient) StopDaemon() error                      { return r.client.StopDaemon() }
+func (r *RealDaemonClient) Passkey(req daemon.PasskeyRequest) (*daemon.Response, error) {
+	return r.client.Passkey(req)
+}
 func (r *RealDaemonClient) EnsureRunning() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -22,6 +22,33 @@ type SecretRequest struct {
 	SecretName string   `json:"secret_name"`
 	Vault      string   `json:"vault,omitempty"`
 	Fields     []string `json:"fields,omitempty"` // If empty, return all fields
+	// Attachments is filled by the server from the item for every "file:"
+	// selector in Fields, so Telegram can show names and sizes.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// AttachmentPrefix marks a field selector that names an item attachment
+// ("file:<name or id>"). Attachments are released only when named this way.
+const AttachmentPrefix = "file:"
+
+// MaxAttachmentBytes caps a single attachment and the attachments of one
+// request. It is Secret Gate's own limit, chosen so content can be held in
+// server and daemon memory; 1Password allows larger files.
+const MaxAttachmentBytes = 10 << 20
+
+// Attachment is a file stored in a 1Password item. Content is never included.
+type Attachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// FileUpload is a file to attach to an item on create or update. Content
+// stays in server memory while approval is pending, like field values.
+type FileUpload struct {
+	Name    string `json:"name"`
+	Content []byte `json:"content,omitempty"`
+	Size    int64  `json:"size"`
 }
 
 // RequestContext describes the agent and task in terms an approver can scan.
@@ -43,6 +70,7 @@ type ItemMutation struct {
 	Operation string            `json:"operation"` // create or update
 	Category  string            `json:"category,omitempty"`
 	Fields    map[string]string `json:"fields"`
+	Files     []FileUpload      `json:"files,omitempty"`
 }
 
 // Labels returns the mutation's field labels, sorted. Values are never included.
@@ -83,11 +111,16 @@ type ApprovalRequest struct {
 	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
 	MutationItems     []string        `json:"mutation_items,omitempty"` // written titles by mutation index
 	MutationStartedAt *time.Time      `json:"mutation_started_at,omitempty"`
-	AutoApproved      string          `json:"auto_approved,omitempty"`   // write_window|follow_up
-	Approver          string          `json:"approver,omitempty"`        // Telegram user whose tap covers this request
-	WriteWindowID     string          `json:"write_window_id,omitempty"` // window that approved or was opened by this request
-	RemindedAt        *time.Time      `json:"reminded_at,omitempty"`
-	ExpiryNotified    bool            `json:"expiry_notified,omitempty"`
+	// MutationItemIDs and MutationFilesDone record, per mutation index, the
+	// item already saved and how many of its files are attached, so a retry
+	// after a failed attachment neither recreates the item nor re-attaches.
+	MutationItemIDs   []string   `json:"mutation_item_ids,omitempty"`
+	MutationFilesDone []int      `json:"mutation_files_done,omitempty"`
+	AutoApproved      string     `json:"auto_approved,omitempty"`   // write_window|follow_up
+	Approver          string     `json:"approver,omitempty"`        // Telegram user whose tap covers this request
+	WriteWindowID     string     `json:"write_window_id,omitempty"` // window that approved or was opened by this request
+	RemindedAt        *time.Time `json:"reminded_at,omitempty"`
+	ExpiryNotified    bool       `json:"expiry_notified,omitempty"`
 }
 
 // IsWrite reports whether the request creates or updates 1Password items.
@@ -109,6 +142,13 @@ func (r *ApprovalRequest) ScrubMutationValues() {
 			fields[label] = ""
 		}
 		m.Fields = fields
+		if len(m.Files) > 0 {
+			files := make([]FileUpload, len(m.Files))
+			for j, f := range m.Files {
+				files[j] = FileUpload{Name: f.Name, Size: f.Size}
+			}
+			m.Files = files
+		}
 		scrubbed[i] = m
 	}
 	r.Mutations = scrubbed

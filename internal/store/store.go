@@ -86,7 +86,7 @@ func mutationsEqual(left, right []models.ItemMutation) bool {
 		return false
 	}
 	for i := range left {
-		if left[i].Item != right[i].Item || left[i].Operation != right[i].Operation || left[i].Category != right[i].Category || !reflect.DeepEqual(left[i].Fields, right[i].Fields) {
+		if left[i].Item != right[i].Item || left[i].Operation != right[i].Operation || left[i].Category != right[i].Category || !reflect.DeepEqual(left[i].Fields, right[i].Fields) || !reflect.DeepEqual(left[i].Files, right[i].Files) {
 			return false
 		}
 	}
@@ -215,6 +215,29 @@ func (s *Store) RecordMutationItem(token string, index int, item string) error {
 	copy(items, req.MutationItems)
 	items[index] = item
 	req.MutationItems = items
+	return nil
+}
+
+// RecordMutationProgress records the item saved for mutation index and how
+// many of its files are attached, so a retry after a failed attachment
+// resumes with the next file instead of saving the item again.
+func (s *Store) RecordMutationProgress(token string, index int, itemID string, filesDone int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.requests[token]
+	if !ok {
+		return ErrNotFound
+	}
+	if index < 0 || index >= len(req.Mutations) {
+		return fmt.Errorf("mutation index %d out of range", index)
+	}
+	ids := make([]string, len(req.Mutations))
+	copy(ids, req.MutationItemIDs)
+	ids[index] = itemID
+	done := make([]int, len(req.Mutations))
+	copy(done, req.MutationFilesDone)
+	done[index] = filesDone
+	req.MutationItemIDs, req.MutationFilesDone = ids, done
 	return nil
 }
 

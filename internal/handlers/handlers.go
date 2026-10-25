@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +40,13 @@ type telegramClient interface {
 	SendWriteBlocked(*models.ApprovalRequest, string) error
 }
 
+// FileAttacher uploads attachments. 1Password Connect cannot upload files,
+// so the server uses the 1Password SDK with a service account for this.
+type FileAttacher interface {
+	CheckVault(ctx context.Context, vaultID string) error
+	Attach(ctx context.Context, vaultID, itemID, name string, content []byte) error
+}
+
 // Handler holds dependencies for HTTP handlers
 type Handler struct {
 	store     *store.Store
@@ -48,6 +57,7 @@ type Handler struct {
 	requestMu sync.Mutex
 	log       *logger.Logger
 	grants    *writegrant.Store
+	files     FileAttacher // nil when no service account is configured
 }
 
 // New creates a new Handler
@@ -61,6 +71,11 @@ func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Co
 		log:      logger.New(),
 		grants:   writegrant.NewStore(),
 	}
+}
+
+// SetFileAttacher enables attaching files on writes.
+func (h *Handler) SetFileAttacher(a FileAttacher) {
+	h.files = a
 }
 
 // SearchPayload is the JSON body for secret search
@@ -89,11 +104,12 @@ type FieldsPayload struct {
 	Vault      string `json:"vault,omitempty"`
 }
 
-// FieldsResponse contains field metadata
+// FieldsResponse contains field and attachment metadata
 type FieldsResponse struct {
 	SecretName string                `json:"secret_name"`
 	VaultName  string                `json:"vault_name"`
 	Fields     []opconnect.FieldInfo `json:"fields"`
+	Files      []opconnect.FileInfo  `json:"files,omitempty"`
 }
 
 // BatchRequestPayload is the JSON body for batch secret requests
@@ -182,15 +198,24 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for i := range secrets {
+		secrets[i].Attachments = nil // server-filled only
+	}
 	if len(mutations) == 0 {
 		for i := range secrets {
-			_, actualVault, actualTitle, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
+			meta, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
 			if err != nil {
 				h.writeError(w, http.StatusForbidden, "secret_unavailable", "Secret Gate cannot verify read access to the requested item.")
 				return
 			}
-			secrets[i].Vault = actualVault
-			secrets[i].SecretName = actualTitle
+			secrets[i].Vault = meta.Vault
+			secrets[i].SecretName = meta.Title
+			attachments, msg := selectAttachments(meta.Files, secrets[i].Fields)
+			if msg != "" {
+				h.writeError(w, http.StatusUnprocessableEntity, "attachment_unavailable", msg)
+				return
+			}
+			secrets[i].Attachments = attachments
 		}
 	}
 
@@ -254,6 +279,10 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				h.writeError(w, http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval.")
 				return
 			}
+		}
+		if status, code, msg := h.precheckFiles(req); status != 0 {
+			h.writeError(w, status, code, msg)
+			return
 		}
 	}
 	req.Fingerprint = fingerprintRequest(req)
@@ -370,6 +399,9 @@ func normalizeWrites(payload BatchRequestPayload, secrets []models.SecretRequest
 		return secrets, nil, ""
 	}
 	for i := range mutations {
+		if len(mutations[i].Fields) == 0 && len(mutations[i].Files) == 0 {
+			return nil, nil, "every write needs at least one field or file"
+		}
 		switch mutations[i].Operation {
 		case "create":
 			mutations[i].Category = opconnect.NormalizeCategory(mutations[i].Category)
@@ -379,6 +411,109 @@ func normalizeWrites(payload BatchRequestPayload, secrets []models.SecretRequest
 		}
 	}
 	return secrets, mutations, ""
+}
+
+// selectAttachments resolves every "file:" selector against the item's
+// attachments. Content is not read here; the approver sees names and sizes.
+func selectAttachments(files []opconnect.FileInfo, fields []string) ([]models.Attachment, string) {
+	var out []models.Attachment
+	var total int64
+	for _, f := range fields {
+		selector, ok := strings.CutPrefix(f, models.AttachmentPrefix)
+		if !ok {
+			continue
+		}
+		file, err := opconnect.FindFile(files, selector)
+		if err != nil {
+			return nil, err.Error()
+		}
+		total += file.Size
+		out = append(out, models.Attachment{ID: file.ID, Name: file.Name, Size: file.Size})
+	}
+	if total > models.MaxAttachmentBytes {
+		return nil, fmt.Sprintf("requested attachments total %d bytes; Secret Gate releases at most %d bytes per request", total, models.MaxAttachmentBytes)
+	}
+	return out, ""
+}
+
+func checkFileName(name string) string {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return "attachment name is empty"
+	case len(name) > 255:
+		return "attachment name is longer than 255 bytes"
+	case name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00"):
+		return fmt.Sprintf("attachment name %q must be a plain file name", name)
+	}
+	return ""
+}
+
+// precheckFiles validates attachments on a write before approval and sets
+// each file's size from its content. A zero status means the request has
+// no files or every check passed.
+func (h *Handler) precheckFiles(req *models.ApprovalRequest) (int, string, string) {
+	var total int64
+	for i := range req.Mutations {
+		m := &req.Mutations[i]
+		prefix := ""
+		if len(req.Mutations) > 1 {
+			prefix = fmt.Sprintf("%q: ", m.Item)
+		}
+		seen := make(map[string]bool, len(m.Files))
+		for j := range m.Files {
+			f := &m.Files[j]
+			f.Size = int64(len(f.Content))
+			if msg := checkFileName(f.Name); msg != "" {
+				return http.StatusUnprocessableEntity, "validation", prefix + msg
+			}
+			if f.Size == 0 {
+				return http.StatusUnprocessableEntity, "validation", prefix + fmt.Sprintf("attachment %q is empty", f.Name)
+			}
+			if seen[f.Name] {
+				return http.StatusUnprocessableEntity, "validation", prefix + fmt.Sprintf("attachment %q appears twice", f.Name)
+			}
+			seen[f.Name] = true
+			total += f.Size
+		}
+	}
+	if total == 0 {
+		return 0, "", ""
+	}
+	if total > models.MaxAttachmentBytes {
+		return http.StatusRequestEntityTooLarge, "attachment_too_large",
+			fmt.Sprintf("attachments total %d bytes; Secret Gate accepts at most %d bytes per request", total, models.MaxAttachmentBytes)
+	}
+	if h.files == nil {
+		return http.StatusServiceUnavailable, "attachments_unavailable",
+			"This server cannot attach files: 1Password Connect has no upload endpoint and no 1Password service account (OP_SERVICE_ACCOUNT_TOKEN) is configured."
+	}
+	vault, err := h.opClient.ResolveVault(req.Vault)
+	if err != nil {
+		return http.StatusServiceUnavailable, "write_capability_unverified", "Could not resolve the vault before requesting approval."
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := h.files.CheckVault(ctx, vault.ID); err != nil {
+		h.log.Error("Attachment precheck failed", logger.F("error", err.Error(), "vault", req.Vault))
+		return http.StatusServiceUnavailable, "attachments_unavailable", "The 1Password service account cannot access this vault, so files cannot be attached."
+	}
+	for _, m := range req.Mutations {
+		if m.Operation != "update" || len(m.Files) == 0 {
+			continue
+		}
+		item, err := h.opClient.ResolveItem(req.Vault, m.Item)
+		if err != nil {
+			return http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval."
+		}
+		for _, f := range m.Files {
+			for _, existing := range item.Files {
+				if existing.Name == f.Name {
+					return http.StatusUnprocessableEntity, "validation", fmt.Sprintf("%q already has an attachment named %q", m.Item, f.Name)
+				}
+			}
+		}
+	}
+	return 0, "", ""
 }
 
 // windowTTL is the window the approver may open from req's Telegram message.
@@ -446,6 +581,7 @@ func fingerprintRequest(req *models.ApprovalRequest) string {
 		Operation string
 		Category  string
 		Labels    []string
+		Files     []models.Attachment
 	}
 	secrets := make([]fingerprintSecret, 0, len(req.Secrets))
 	for _, secret := range req.Secrets {
@@ -461,7 +597,11 @@ func fingerprintRequest(req *models.ApprovalRequest) string {
 	})
 	var mutations []fingerprintMutation
 	for _, m := range req.Mutations {
-		mutations = append(mutations, fingerprintMutation{Item: m.Item, Operation: m.Operation, Category: m.Category, Labels: m.Labels()})
+		var files []models.Attachment
+		for _, f := range m.Files {
+			files = append(files, models.Attachment{Name: f.Name, Size: f.Size})
+		}
+		mutations = append(mutations, fingerprintMutation{Item: m.Item, Operation: m.Operation, Category: m.Category, Labels: m.Labels(), Files: files})
 	}
 	canonical := struct {
 		Action    string
@@ -655,6 +795,19 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 			if len(s.Fields) > 0 {
 				filtered := make(map[string]string)
 				for _, f := range s.Fields {
+					// Attachments are released only when named, base64-encoded
+					// under their "file:" selector, never with the whole item.
+					if selector, ok := strings.CutPrefix(f, models.AttachmentPrefix); ok {
+						file, content, err := h.opClient.ReadFile(vault, actualName, selector, models.MaxAttachmentBytes)
+						if err != nil {
+							h.log.Error("Failed to download attachment", logger.F("error", err.Error(), "request_id", req.ID, "secret", actualName, "file", selector))
+							h.writeError(w, http.StatusInternalServerError, "attachment_fetch_failed", fmt.Sprintf("Failed to download attachment %q", selector))
+							return
+						}
+						filtered[f] = base64.StdEncoding.EncodeToString(content)
+						h.log.Info("Attachment released", logger.F("request_id", req.ID, "secret", actualName, "file", file.Name, "size", file.Size))
+						continue
+					}
 					if actual, val, ok := core.ResolveField(allFields, f); ok {
 						filtered[actual] = val
 					}
@@ -724,29 +877,56 @@ func (h *Handler) executeWrites(w http.ResponseWriter, token string) {
 		if written[i] != "" {
 			continue
 		}
-		item, err := h.opClient.PutItem(claimed.Vault, m.Item, m.Operation, m.Category, m.Fields)
-		if err != nil {
-			_ = h.store.ReleaseMutation(token)
-			h.log.Error("Failed to write 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "item", m.Item, "vault", claimed.Vault, "index", i))
-			prefix := ""
-			if len(claimed.Mutations) > 1 {
-				prefix = fmt.Sprintf("Wrote %d of %d items before %q failed. ", countWritten(written), len(claimed.Mutations), m.Item)
+		prefix := ""
+		if len(claimed.Mutations) > 1 {
+			prefix = fmt.Sprintf("Wrote %d of %d items before %q failed. ", countWritten(written), len(claimed.Mutations), m.Item)
+		}
+		itemID, filesDone := "", 0
+		if i < len(claimed.MutationItemIDs) {
+			itemID = claimed.MutationItemIDs[i]
+			filesDone = claimed.MutationFilesDone[i]
+		}
+		title := m.Item
+		if itemID == "" {
+			var item *opconnect.Item
+			var err error
+			if m.Operation == "update" && len(m.Fields) == 0 {
+				item, err = h.opClient.ResolveItem(claimed.Vault, m.Item)
+			} else {
+				item, err = h.opClient.PutItem(claimed.Vault, m.Item, m.Operation, m.Category, m.Fields)
 			}
-			var verr *opconnect.ValidationError
-			if errors.As(err, &verr) {
-				h.writeError(w, http.StatusUnprocessableEntity, "validation", prefix+"1Password rejected the item: "+verr.Message)
+			if err != nil {
+				_ = h.store.ReleaseMutation(token)
+				h.log.Error("Failed to write 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "item", m.Item, "vault", claimed.Vault, "index", i))
+				var verr *opconnect.ValidationError
+				if errors.As(err, &verr) {
+					h.writeError(w, http.StatusUnprocessableEntity, "validation", prefix+"1Password rejected the item: "+verr.Message)
+					return
+				}
+				h.writeError(w, http.StatusInternalServerError, "item_write_failed", prefix+"Failed to write item to 1Password")
 				return
 			}
-			h.writeError(w, http.StatusInternalServerError, "item_write_failed", prefix+"Failed to write item to 1Password")
-			return
+			itemID, title = item.ID, item.Title
+			if len(m.Files) > 0 {
+				if err := h.store.RecordMutationProgress(token, i, itemID, 0); err != nil {
+					h.log.Error("Failed to record written 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "index", i))
+					h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
+					return
+				}
+			}
 		}
-		written[i] = item.Title
-		if err := h.store.RecordMutationItem(token, i, item.Title); err != nil {
+		if filesDone < len(m.Files) {
+			if !h.attachFiles(w, token, claimed, i, itemID, filesDone, prefix) {
+				return
+			}
+		}
+		written[i] = title
+		if err := h.store.RecordMutationItem(token, i, title); err != nil {
 			h.log.Error("Failed to record written 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "index", i))
 			h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
 			return
 		}
-		h.log.Info("1Password item written", logger.F("request_id", claimed.ID, "item", item.Title, "vault", claimed.Vault, "operation", m.Operation, "approved_by", firstNonEmpty(claimed.AutoApproved, "tap")))
+		h.log.Info("1Password item written", logger.F("request_id", claimed.ID, "item", title, "vault", claimed.Vault, "operation", m.Operation, "files", len(m.Files), "approved_by", firstNonEmpty(claimed.AutoApproved, "tap")))
 	}
 	if err := h.store.CompleteMutation(token); err != nil {
 		h.log.Error("Failed to record completed 1Password write", logger.F("error", err.Error(), "request_id", claimed.ID))
@@ -759,6 +939,42 @@ func (h *Handler) executeWrites(w http.ResponseWriter, token string) {
 		h.grants.GrantFollowUps(writegrant.ScopeOf(claimed), written, claimed.WriteWindowID, claimed.ID, claimed.Approver, h.config.WriteFollowUpTTL)
 	}
 	h.writeJSON(w, http.StatusOK, mutationResponse(claimed, written))
+}
+
+// attachFiles uploads mutation index's files from filesDone onward, recording
+// each success. On failure it releases the claim so a retry resumes with the
+// file that failed, and writes the error response. File content is never logged.
+func (h *Handler) attachFiles(w http.ResponseWriter, token string, claimed *models.ApprovalRequest, index int, itemID string, filesDone int, prefix string) bool {
+	m := claimed.Mutations[index]
+	fail := func(status int, code, message string) bool {
+		_ = h.store.ReleaseMutation(token)
+		h.writeError(w, status, code, prefix+message)
+		return false
+	}
+	if h.files == nil {
+		return fail(http.StatusServiceUnavailable, "attachments_unavailable", "No 1Password service account is configured to attach files.")
+	}
+	vault, err := h.opClient.ResolveVault(claimed.Vault)
+	if err != nil {
+		return fail(http.StatusInternalServerError, "item_write_failed", "Could not resolve the vault to attach files.")
+	}
+	for j := filesDone; j < len(m.Files); j++ {
+		f := m.Files[j]
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := h.files.Attach(ctx, vault.ID, itemID, f.Name, f.Content)
+		cancel()
+		if err != nil {
+			h.log.Error("Failed to attach file", logger.F("error", err.Error(), "request_id", claimed.ID, "item", m.Item, "file", f.Name, "size", f.Size))
+			return fail(http.StatusBadGateway, "attachment_failed",
+				fmt.Sprintf("%q was saved but attaching %q failed. Retry the same request to resume with that file.", m.Item, f.Name))
+		}
+		if err := h.store.RecordMutationProgress(token, index, itemID, j+1); err != nil {
+			h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "File was attached but completion state could not be recorded")
+			return false
+		}
+		h.log.Info("File attached", logger.F("request_id", claimed.ID, "item", m.Item, "file", f.Name, "size", f.Size))
+	}
+	return true
 }
 
 func countWritten(items []string) int {
@@ -1062,7 +1278,7 @@ func (h *Handler) HandleFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fields, vaultName, secretName, err := h.opClient.GetItemFields(payload.Vault, payload.SecretName)
+	meta, err := h.opClient.GetItemFields(payload.Vault, payload.SecretName)
 	if err != nil {
 		h.log.Error("Failed to get item fields", logger.F("error", err.Error(), "secret", payload.SecretName))
 		h.writeError(w, http.StatusInternalServerError, "fields_failed", err.Error())
@@ -1070,9 +1286,10 @@ func (h *Handler) HandleFields(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, FieldsResponse{
-		SecretName: secretName,
-		VaultName:  vaultName,
-		Fields:     fields,
+		SecretName: meta.Title,
+		VaultName:  meta.Vault,
+		Fields:     meta.Fields,
+		Files:      meta.Files,
 	})
 }
 
@@ -1131,7 +1348,7 @@ func OpenAPISpec() string {
                         "fields": {
                           "type": "array",
                           "items": {"type": "string"},
-                          "description": "Optional list of field labels to retrieve. If omitted, all fields are returned. Use /fields to discover available field labels."
+                          "description": "Optional list of field labels to retrieve. If omitted, all fields are returned (attachments never are). Name an attachment as file:<name or id> to release its content, base64-encoded under that key. Use /fields to discover labels and attachments."
                         }
                       }
                     }
@@ -1171,11 +1388,12 @@ func OpenAPISpec() string {
                   "mutation": {
                     "type": "object",
                     "description": "Approval-gated item creation or update. Requires one item and an explicit vault.",
-                    "required": ["operation", "fields"],
+                    "required": ["operation"],
                     "properties": {
                       "operation": {"type": "string", "enum": ["create", "update"]},
                       "category": {"type": "string", "description": "1Password category for a new item. Defaults to SECURE_NOTE."},
-                      "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+                      "fields": {"type": "object", "additionalProperties": {"type": "string"}},
+                      "files": {"type": "array", "description": "Files to attach (needs a 1Password service account on the server; at most 10 MiB per request). Telegram shows names and sizes only.", "items": {"type": "object", "required": ["name", "content"], "properties": {"name": {"type": "string"}, "content": {"type": "string", "format": "byte"}}}}
                     }
                   },
                   "mutations": {
@@ -1184,12 +1402,13 @@ func OpenAPISpec() string {
                     "description": "Batch write: up to 10 creates or updates in the top-level vault behind one approval. Omit secret_name and secrets. Each item may appear once.",
                     "items": {
                       "type": "object",
-                      "required": ["item", "operation", "fields"],
+                      "required": ["item", "operation"],
                       "properties": {
                         "item": {"type": "string", "description": "Item title"},
                         "operation": {"type": "string", "enum": ["create", "update"]},
                         "category": {"type": "string"},
-                        "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+                        "fields": {"type": "object", "additionalProperties": {"type": "string"}},
+                        "files": {"type": "array", "items": {"type": "object", "required": ["name", "content"], "properties": {"name": {"type": "string"}, "content": {"type": "string", "format": "byte"}}}}
                       }
                     }
                   }
@@ -1343,6 +1562,19 @@ func OpenAPISpec() string {
                           "purpose": {"type": "string"},
                           "section": {"type": "string", "description": "Section label; combine with the field label as section.label when labels repeat"},
                           "reference": {"type": "string", "description": "1Password secret reference when supplied by Connect"}
+                        }
+                      }
+                    },
+                    "files": {
+                      "type": "array",
+                      "description": "Attachments on this item: metadata only, never content",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {"type": "string"},
+                          "name": {"type": "string"},
+                          "size": {"type": "integer", "description": "Bytes"},
+                          "section": {"type": "string"}
                         }
                       }
                     }

@@ -42,9 +42,15 @@ Commands:
   item fields        List an item's field labels and types (no values)
   item read          Read cached field values into model context (requires --reveal)
   exec               Run a command with a secret injected as an env var (value never printed)
+  attachment exec    Run a command with an approved attachment as a temp file or stdin
   ssh                SSH using a cached key item
   otp show           Print the current OTP code (requires --reveal)
   otp exec           Run a command with the current OTP code as an env var
+  passkey arm        Add an empty virtual authenticator to a browser tab (CDP)
+  passkey register   Store the passkey a site registered as a new item (Telegram-approved)
+  passkey load       Put an approved passkey item into a browser tab for sign-in
+  passkey release    Remove the authenticator; optionally save the sign count
+  passkey list       List authenticators the daemon holds
   write create       Create a 1Password item (values via --stdin, Telegram-approved)
   write update       Update a 1Password item (values via --stdin, Telegram-approved)
   write batch        Create or update up to 10 items behind one Telegram approval
@@ -103,6 +109,10 @@ func (a *App) Run(args []string) int {
 		return a.runItem(args[1:])
 	case "exec":
 		return a.runExec(args[1:])
+	case "attachment":
+		return a.runAttachment(args[1:])
+	case "passkey":
+		return a.runPasskey(args[1:])
 	case "ssh":
 		return a.runSSH(args[1:])
 	case "otp":

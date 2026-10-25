@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/johnuopini/secret-gate/internal/passkey"
 )
 
 type Server struct {
@@ -16,6 +19,7 @@ type Server struct {
 	cacheTTL   time.Duration
 	startedAt  time.Time
 	watcher    *Watcher
+	passkeys   *passkey.Manager
 	runMu      sync.Mutex
 	listenerMu sync.Mutex
 	listener   net.Listener
@@ -32,6 +36,7 @@ func NewServer(socketPath string, cacheTTL time.Duration) *Server {
 		cacheTTL:   cacheTTL,
 		startedAt:  time.Now(),
 		watcher:    NewWatcher(c, cacheTTL, socketPath+".watches.json"),
+		passkeys:   passkey.NewManager(),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -89,6 +94,7 @@ func (s *Server) Stop() {
 		if s.watcher != nil {
 			s.watcher.Stop()
 		}
+		s.passkeys.CloseAll()
 		s.listenerMu.Lock()
 		if s.listener != nil {
 			s.listener.Close()
@@ -106,9 +112,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxMessageBytes)
 	if !scanner.Scan() {
 		return
 	}
@@ -139,6 +146,8 @@ func (s *Server) handleRequest(req Request) Response {
 		return s.handleWatch(req)
 	case CmdUnwatch:
 		return s.handleUnwatch(req)
+	case CmdPasskey:
+		return s.handlePasskey(req)
 	case CmdStop:
 		go func() {
 			time.Sleep(100 * time.Millisecond)
@@ -183,11 +192,12 @@ func (s *Server) handleStatus() Response {
 	return Response{
 		OK: true,
 		Status: &DaemonStatus{
-			Uptime:     time.Since(s.startedAt).Truncate(time.Second).String(),
-			EntryCount: s.cache.Count(),
-			WatchCount: s.watcher.Count(),
-			SocketPath: s.socketPath,
-			PID:        os.Getpid(),
+			Uptime:       time.Since(s.startedAt).Truncate(time.Second).String(),
+			EntryCount:   s.cache.Count(),
+			WatchCount:   s.watcher.Count(),
+			PasskeyCount: len(s.passkeys.List()),
+			SocketPath:   s.socketPath,
+			PID:          os.Getpid(),
 		},
 	}
 }
@@ -223,6 +233,44 @@ func (s *Server) handleUnwatch(req Request) Response {
 		state = "removed"
 	}
 	return Response{OK: true, WatchState: state}
+}
+
+// handlePasskey runs a passkey action. Only collect returns key material, and
+// only to the client on the 0600 socket; nothing here is logged.
+func (s *Server) handlePasskey(req Request) Response {
+	p := req.Passkey
+	if p == nil {
+		return Response{Error: "passkey request is missing"}
+	}
+	ctx := context.Background()
+	target := passkey.Target{Endpoint: p.Endpoint, PageURL: p.PageURL, TargetID: p.TargetID, Hold: time.Duration(p.HoldSec) * time.Second}
+	var info passkey.Info
+	var err error
+	switch p.Action {
+	case PasskeyArm:
+		info, err = s.passkeys.Arm(ctx, target)
+	case PasskeyLoad:
+		if p.Credential == nil {
+			return Response{Error: "load needs a credential"}
+		}
+		info, err = s.passkeys.Load(ctx, target, *p.Credential, p.Item, p.Vault)
+	case PasskeyCollect:
+		var cred passkey.Credential
+		cred, info, err = s.passkeys.Collect(ctx, p.Session, p.Item, p.Vault)
+		if err == nil {
+			return Response{OK: true, Passkeys: []passkey.Info{info}, Credential: &cred}
+		}
+	case PasskeyRelease:
+		info, err = s.passkeys.Release(ctx, p.Session)
+	case PasskeyList:
+		return Response{OK: true, Passkeys: s.passkeys.List()}
+	default:
+		return Response{Error: fmt.Sprintf("unknown passkey action %q", p.Action)}
+	}
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{OK: true, Passkeys: []passkey.Info{info}}
 }
 
 func (s *Server) writeResponse(conn net.Conn, resp Response) {

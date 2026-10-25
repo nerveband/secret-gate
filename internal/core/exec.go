@@ -23,6 +23,7 @@ type ExecSpec struct {
 	Argv         []string
 	ShellCommand string
 	Env          map[string]string
+	Stdin        []byte // optional child stdin
 	WorkingDir   string
 	Timeout      time.Duration
 	Redactor     *Redactor
@@ -69,6 +70,9 @@ func ExecCommand(ctx context.Context, spec ExecSpec) (*ExecResult, error) {
 	}
 	if spec.WorkingDir != "" {
 		cmd.Dir = spec.WorkingDir
+	}
+	if spec.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(spec.Stdin)
 	}
 
 	var stdout, stderr bytes.Buffer

@@ -46,7 +46,7 @@ func RunDaemon(socketPath string, cacheTTLSeconds int, idleTimeoutSeconds int) e
 			srv.Stop()
 			return nil
 		case <-idleTicker.C:
-			if srv.cache.HasValidEntries() {
+			if srv.cache.HasValidEntries() || srv.passkeys.Active() {
 				lastActivity = time.Now()
 			} else if time.Since(lastActivity) > idleTimeout {
 				srv.Stop()

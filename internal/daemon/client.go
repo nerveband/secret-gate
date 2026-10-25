@@ -32,8 +32,12 @@ func (c *Client) send(req Request) (*Response, error) {
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-
+	// Passkey actions talk to the browser over DevTools and take longer.
+	deadline := 5 * time.Second
+	if req.Command == CmdPasskey {
+		deadline = 25 * time.Second
+	}
+	conn.SetDeadline(time.Now().Add(deadline))
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
@@ -45,6 +49,7 @@ func (c *Client) send(req Request) (*Response, error) {
 	}
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxMessageBytes)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("reading response: %w", err)
@@ -156,4 +161,17 @@ func (c *Client) Unwatch(token string) error {
 		return fmt.Errorf("%s", resp.Error)
 	}
 	return nil
+}
+
+// Passkey runs a passkey action in the daemon, which keeps the DevTools
+// session open between calls.
+func (c *Client) Passkey(req PasskeyRequest) (*Response, error) {
+	resp, err := c.send(Request{Command: CmdPasskey, Passkey: &req})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("%s", resp.Error)
+	}
+	return resp, nil
 }

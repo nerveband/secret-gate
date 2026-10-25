@@ -204,7 +204,40 @@ func actionDescription(req *models.ApprovalRequest) string {
 	if req.IsWrite() {
 		return actionSummary(req) + "\n" + writeDetails(req)
 	}
-	return actionSummary(req) + "\nVault: " + html.EscapeString(req.Vault)
+	return actionSummary(req) + "\nVault: " + html.EscapeString(req.Vault) + attachmentLines(req)
+}
+
+// attachmentLines lists requested attachments by name and size, never content.
+func attachmentLines(req *models.ApprovalRequest) string {
+	var lines []string
+	for _, s := range req.Secrets {
+		for _, a := range s.Attachments {
+			lines = append(lines, "📎 "+html.EscapeString(a.Name)+" ("+humanSize(a.Size)+")")
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\nAttachments:\n" + strings.Join(lines, "\n")
+}
+
+// fileList names files to attach with their sizes, never their content.
+func fileList(files []models.FileUpload) string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name+" ("+humanSize(f.Size)+")")
+	}
+	return html.EscapeString(strings.Join(names, ", "))
+}
+
+func humanSize(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 func actionSummary(req *models.ApprovalRequest) string {
@@ -227,14 +260,30 @@ func actionSummary(req *models.ApprovalRequest) string {
 	return "Read " + html.EscapeString(fields) + " from \"" + html.EscapeString(name) + "\""
 }
 
-// writeDetails lists each write's item and field labels. Values are never shown.
+// writeDetails lists each write's item, field labels, and file names with
+// sizes. Values and file content are never shown.
 func writeDetails(req *models.ApprovalRequest) string {
 	if len(req.Mutations) == 1 {
-		return "Fields: " + html.EscapeString(strings.Join(req.Mutations[0].Labels(), ", "))
+		m := req.Mutations[0]
+		var lines []string
+		if len(m.Fields) > 0 {
+			lines = append(lines, "Fields: "+html.EscapeString(strings.Join(m.Labels(), ", ")))
+		}
+		if len(m.Files) > 0 {
+			lines = append(lines, "📎 Files: "+fileList(m.Files))
+		}
+		return strings.Join(lines, "\n")
 	}
 	lines := make([]string, 0, len(req.Mutations))
 	for _, m := range req.Mutations {
-		lines = append(lines, "• "+operationVerb(m.Operation)+" \""+html.EscapeString(m.Item)+"\" (fields: "+html.EscapeString(strings.Join(m.Labels(), ", "))+")")
+		var parts []string
+		if len(m.Fields) > 0 {
+			parts = append(parts, "fields: "+html.EscapeString(strings.Join(m.Labels(), ", ")))
+		}
+		if len(m.Files) > 0 {
+			parts = append(parts, "files: "+fileList(m.Files))
+		}
+		lines = append(lines, "• "+operationVerb(m.Operation)+" \""+html.EscapeString(m.Item)+"\" ("+strings.Join(parts, "; ")+")")
 	}
 	return strings.Join(lines, "\n")
 }

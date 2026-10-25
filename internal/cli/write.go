@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,14 @@ from stdin as JSON (value-input class — values never appear in argv):
 Use --no-wait to hand the pending write to the local daemon and return a
 token at once (resume with: secret-gate request wait <token>). The server
 holds the values while approval is pending, so the caller can drop them.
-Use --dry-run to preview the operation (field labels only, no values).`
+Use --dry-run to preview the operation (field labels only, no values).
+
+Attach files with a "files" list of local paths (up to 10 MiB per request;
+Telegram shows names and sizes only). The server needs a 1Password service
+account for this, because 1Password Connect cannot upload files:
+
+  echo '{"fields":{"note":"release keystore"},"files":[{"path":"./release.jks"}]}' \
+    | secret-gate write %[1]s --item "Android keystore" --vault "Infra" --reason "store the keystore" --stdin`
 	usageText["write create"] = fmt.Sprintf(writeUsage, "create", "Create")
 	usageText["write update"] = fmt.Sprintf(writeUsage, "update", "Update")
 	usageText["write batch"] = `Usage: secret-gate write batch --vault <vault> --reason <why> --stdin [--no-wait] [--dry-run]
@@ -40,13 +48,15 @@ Items are read from stdin as JSON (value-input class):
     {"item":"Expo token","operation":"create","fields":{"token":"<value>"}}]}' \
     | secret-gate write batch --vault "AI Agents" --reason "store release credentials" --stdin
 
-Each item may appear once; merge fields for one item into one entry.`
+Each item may appear once; merge fields for one item into one entry. Items
+may carry "files":[{"path":"./cert.p12","name":"cert.p12"}] to attach.`
 }
 
 // stdinWritePayload is the JSON document accepted on stdin.
 type stdinWritePayload struct {
 	Category string            `json:"category"`
 	Fields   map[string]string `json:"fields"`
+	Files    []core.FileWrite  `json:"files"`
 }
 
 type stdinBatchPayload struct {
@@ -115,15 +125,15 @@ func (a *App) runWrite(args []string) int {
 			return a.fail(command, "usage", "stdin is not valid JSON: "+err.Error(),
 				`expected: {"category":"SECURE_NOTE","fields":{"label":"value"}}`)
 		}
-		if len(payload.Fields) == 0 {
-			return a.fail(command, "usage", "stdin JSON must contain a non-empty \"fields\" object",
-				`expected: {"fields":{"label":"value"}}`)
+		if len(payload.Fields) == 0 && len(payload.Files) == 0 {
+			return a.fail(command, "usage", "stdin JSON must contain a non-empty \"fields\" object or \"files\" list",
+				`expected: {"fields":{"label":"value"}} or {"files":[{"path":"./file"}]}`)
 		}
 		cat := *category
 		if cat == "" {
 			cat = payload.Category
 		}
-		items = []core.ItemWrite{{Item: *item, Operation: op, Category: cat, Fields: payload.Fields}}
+		items = []core.ItemWrite{{Item: *item, Operation: op, Category: cat, Fields: payload.Fields, Files: payload.Files}}
 	}
 
 	if *dryRun {
@@ -135,7 +145,7 @@ func (a *App) runWrite(args []string) int {
 	}
 
 	var out *core.RequestResult
-	if op == "batch" {
+	if op == "batch" || len(items[0].Files) > 0 {
 		out, err = a.Service.WriteItems(context.Background(), *vault, *reason, items, core.RequestContext{})
 	} else {
 		it := items[0]
@@ -151,7 +161,8 @@ func (a *App) runWrite(args []string) int {
 	return a.ok(command, out, &Meta{Visibility: VisibilityValueInput})
 }
 
-// writePreview describes a write by item names and field labels only.
+// writePreview describes a write by item names, field labels, and file
+// names only.
 func writePreview(op, vault string, items []core.ItemWrite) map[string]interface{} {
 	preview := make([]map[string]interface{}, 0, len(items))
 	for _, it := range items {
@@ -160,9 +171,21 @@ func writePreview(op, vault string, items []core.ItemWrite) map[string]interface
 			labels = append(labels, k)
 		}
 		sort.Strings(labels)
-		preview = append(preview, map[string]interface{}{
+		entry := map[string]interface{}{
 			"secret_name": it.Item, "operation": it.Operation, "category": it.Category, "field_labels": labels,
-		})
+		}
+		if len(it.Files) > 0 {
+			files := make([]string, 0, len(it.Files))
+			for _, f := range it.Files {
+				name := f.Name
+				if name == "" {
+					name = filepath.Base(f.Path)
+				}
+				files = append(files, name)
+			}
+			entry["files"] = files
+		}
+		preview = append(preview, entry)
 	}
 	if op != "batch" {
 		single := preview[0]

@@ -77,9 +77,10 @@ type fieldsPayload struct {
 }
 
 type fieldsResponse struct {
-	SecretName string      `json:"secret_name"`
-	VaultName  string      `json:"vault_name"`
-	Fields     []FieldInfo `json:"fields"`
+	SecretName string           `json:"secret_name"`
+	VaultName  string           `json:"vault_name"`
+	Fields     []FieldInfo      `json:"fields"`
+	Files      []AttachmentInfo `json:"files,omitempty"`
 }
 
 type requestPayload struct {
@@ -91,7 +92,7 @@ type requestPayload struct {
 	Secrets    []secretRequestPayload `json:"secrets,omitempty"`
 	Context    RequestContext         `json:"context,omitempty"`
 	Mutation   *mutationPayload       `json:"mutation,omitempty"`
-	Mutations  []ItemWrite            `json:"mutations,omitempty"`
+	Mutations  []itemWritePayload     `json:"mutations,omitempty"`
 }
 
 type secretRequestPayload struct {
@@ -104,6 +105,33 @@ type mutationPayload struct {
 	Operation string            `json:"operation"`
 	Category  string            `json:"category,omitempty"`
 	Fields    map[string]string `json:"fields"`
+	Files     []filePayload     `json:"files,omitempty"`
+}
+
+// itemWritePayload is one batch entry on the wire, with file content.
+type itemWritePayload struct {
+	Item      string            `json:"item"`
+	Operation string            `json:"operation"`
+	Category  string            `json:"category,omitempty"`
+	Fields    map[string]string `json:"fields"`
+	Files     []filePayload     `json:"files,omitempty"`
+}
+
+// filePayload carries attachment content; encoding/json sends []byte as base64.
+type filePayload struct {
+	Name    string `json:"name"`
+	Content []byte `json:"content"`
+}
+
+func filesPayload(files []FileWrite) []filePayload {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]filePayload, len(files))
+	for i, f := range files {
+		out[i] = filePayload{Name: f.Name, Content: f.Content}
+	}
+	return out
 }
 
 type requestResponse struct {
@@ -235,6 +263,7 @@ func (p *httpProxyClient) GetFields(secretName, vault string) (*FieldsResult, er
 		SecretName: fieldsResp.SecretName,
 		VaultName:  fieldsResp.VaultName,
 		Fields:     fieldsResp.Fields,
+		Files:      fieldsResp.Files,
 	}, nil
 }
 
@@ -270,10 +299,14 @@ func (p *httpProxyClient) SubmitWrite(_ context.Context, vault, reason string, i
 		payload.SecretName = item.Item
 		payload.Action = item.Operation
 		payload.Secrets = []secretRequestPayload{{SecretName: item.Item, Vault: vault}}
-		payload.Mutation = &mutationPayload{Operation: item.Operation, Category: item.Category, Fields: item.Fields}
+		payload.Mutation = &mutationPayload{Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files)}
 	} else {
 		payload.Action = "write"
-		payload.Mutations = items
+		for _, item := range items {
+			payload.Mutations = append(payload.Mutations, itemWritePayload{
+				Item: item.Item, Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files),
+			})
+		}
 	}
 	return p.post(payload)
 }
