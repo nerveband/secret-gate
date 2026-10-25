@@ -3,14 +3,12 @@ package main
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/autosession"
 	"github.com/johnuopini/secret-gate/internal/config"
 	"github.com/johnuopini/secret-gate/internal/handlers"
 	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
 	"github.com/johnuopini/secret-gate/internal/store"
 	"github.com/johnuopini/secret-gate/internal/telegram"
@@ -53,84 +51,22 @@ func main() {
 
 	// Start Telegram polling goroutine
 	go tgClient.PollUpdates(func(callback *telegram.CallbackQuery) {
-		parts := strings.SplitN(callback.Data, ":", 2)
-		if len(parts) != 2 {
-			tgClient.AnswerCallbackQuery(callback.ID, "Invalid callback data")
-			return
-		}
-
-		action := parts[0]
-		requestID := parts[1]
-
-		req, err := requestStore.GetByID(requestID)
-		if err == store.ErrNotFound {
-			tgClient.AnswerCallbackQuery(callback.ID, "Request not found or expired")
-			return
-		}
-		if err != nil {
-			log.Error("Error fetching request", logger.F("error", err.Error(), "request_id", requestID))
-			tgClient.AnswerCallbackQuery(callback.ID, "Internal error")
-			return
-		}
-
-		if req.Status != models.StatusPending {
-			tgClient.AnswerCallbackQuery(callback.ID, "Request already processed")
-			return
-		}
-
 		approver := callback.From.Username
 		if approver == "" {
 			approver = callback.From.FirstName
 		}
-
-		switch action {
-		case "approve":
-			req.Approve()
-			if err := requestStore.Update(req); err != nil {
-				log.Error("Error updating request", logger.F("error", err.Error(), "request_id", req.ID))
-			}
-			tgClient.AnswerCallbackQuery(callback.ID, "Approved!")
-			if req.TelegramMsgID != 0 {
-				tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
-			}
-			log.Info("Request approved", logger.F("request_id", req.ID, "approver", approver))
-
-		case "approve_window":
-			if req.Mutation != nil {
-				tgClient.AnswerCallbackQuery(callback.ID, "Writes require approval once")
-				return
-			}
-			req.Approve()
-			session := sessionStore.Create(approver, cfg.AutoApproveTTL)
-			if err := requestStore.Update(req); err != nil {
-				log.Error("Error updating request", logger.F("error", err.Error(), "request_id", req.ID))
-			}
-			tgClient.AnswerCallbackQuery(callback.ID, "Approved with window")
-			if req.TelegramMsgID != 0 {
-				tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
-			}
-			log.Info("Request approved with auto-approval window", logger.F(
-				"request_id", req.ID,
-				"session_id", session.ID,
-				"approver", approver,
-				"expires_at", session.ExpiresAt.Format(time.RFC3339),
-			))
-
-		case "deny":
-			req.Deny()
-			if err := requestStore.Update(req); err != nil {
-				log.Error("Error updating request", logger.F("error", err.Error(), "request_id", req.ID))
-			}
-			tgClient.AnswerCallbackQuery(callback.ID, "Denied")
-			if req.TelegramMsgID != 0 {
-				tgClient.UpdateMessageDenied(req.TelegramMsgID, req, approver)
-			}
-			log.Info("Request denied", logger.F("request_id", req.ID, "approver", approver))
-
-		default:
-			tgClient.AnswerCallbackQuery(callback.ID, "Unknown action")
-		}
+		h.HandleTelegramAction(callback.ID, callback.Data, approver)
 	})
+
+	// Write reminders and expired-request message updates need a finer tick
+	// than cleanup: a reminder is only useful before the request expires.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for now := range ticker.C {
+			h.SweepPending(now)
+		}
+	}()
 
 	// Start cleanup goroutine
 	go func() {
@@ -146,7 +82,15 @@ func main() {
 		}
 	}()
 
-	log.Info("Starting secret-gate", logger.F("port", cfg.Port, "auto_approve_ttl", cfg.AutoApproveTTL.String(), "long_poll_max_wait", cfg.LongPollMaxWait.String()))
+	log.Info("Starting secret-gate", logger.F(
+		"port", cfg.Port,
+		"auto_approve_ttl", cfg.AutoApproveTTL.String(),
+		"long_poll_max_wait", cfg.LongPollMaxWait.String(),
+		"write_request_ttl", cfg.WriteRequestTTL.String(),
+		"write_window_ttl", cfg.WriteWindowTTL.String(),
+		"write_followup_ttl", cfg.WriteFollowUpTTL.String(),
+		"write_reminder_before", cfg.WriteReminderBefore.String(),
+	))
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           mux,

@@ -54,6 +54,22 @@ type AsyncProxyClient interface {
 	Retrieve(ctx context.Context, secretURL, secretName, vault string) (*RequestResult, error)
 }
 
+// ItemWrite is one item create or update. Values travel only to the server.
+type ItemWrite struct {
+	Item      string            `json:"item"`
+	Operation string            `json:"operation"`
+	Category  string            `json:"category,omitempty"`
+	Fields    map[string]string `json:"fields"`
+}
+
+// WriteClient submits one approval for one or more item writes in a vault.
+// WriteItems blocks like Write; SubmitWrite returns the pending request so
+// the local daemon can finish the write after approval.
+type WriteClient interface {
+	WriteItems(ctx context.Context, vault, reason string, items []ItemWrite, requestContext RequestContext) (*RequestResult, error)
+	SubmitWrite(ctx context.Context, vault, reason string, items []ItemWrite, requestContext RequestContext) (*PendingRequest, error)
+}
+
 // --- Shared data types (moved verbatim from internal/mcpserver) ---
 
 // DaemonStatusResult holds daemon status information.

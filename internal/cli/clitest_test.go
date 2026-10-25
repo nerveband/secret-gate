@@ -18,6 +18,7 @@ type fakeDaemon struct {
 	data    map[string]map[string]string
 	flushed bool
 	stopped bool
+	watches []daemon.WatchSpec
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -51,9 +52,12 @@ func (f *fakeDaemon) Flush() error {
 	f.data = map[string]map[string]string{}
 	return nil
 }
-func (f *fakeDaemon) StopDaemon() error            { f.stopped = true; f.running = false; return nil }
-func (f *fakeDaemon) Watch(daemon.WatchSpec) error { return nil }
-func (f *fakeDaemon) Unwatch(string) error         { return nil }
+func (f *fakeDaemon) StopDaemon() error { f.stopped = true; f.running = false; return nil }
+func (f *fakeDaemon) Watch(spec daemon.WatchSpec) error {
+	f.watches = append(f.watches, spec)
+	return nil
+}
+func (f *fakeDaemon) Unwatch(string) error { return nil }
 
 // --- fake proxy (implements core.ProxyClient + core.AsyncProxyClient) ---
 
@@ -63,11 +67,23 @@ type fakeProxy struct {
 	fieldsErr     error
 	writeResult   *core.RequestResult
 	writeCalls    int
+	batchItems    [][]core.ItemWrite // one entry per WriteItems/SubmitWrite call
+	submitWrites  int
 
 	pending   *core.PendingRequest
 	statuses  []core.StatusResult // consumed one per Status() call; last repeats
 	retrieved *core.RequestResult
 	statusIdx int
+}
+
+func (p *fakeProxy) WriteItems(ctx context.Context, vault, reason string, items []core.ItemWrite, rc core.RequestContext) (*core.RequestResult, error) {
+	p.batchItems = append(p.batchItems, items)
+	return &core.RequestResult{Status: "completed", SecretName: items[0].Item}, nil
+}
+func (p *fakeProxy) SubmitWrite(ctx context.Context, vault, reason string, items []core.ItemWrite, rc core.RequestContext) (*core.PendingRequest, error) {
+	p.batchItems = append(p.batchItems, items)
+	p.submitWrites++
+	return &core.PendingRequest{Token: "tok-write", StatusURL: "http://gate/status/tok-write", ExpiresAt: "2026-10-25T17:00:00Z"}, nil
 }
 
 func (p *fakeProxy) Search(query string, limit int) ([]core.SearchResultItem, error) {

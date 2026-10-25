@@ -14,17 +14,27 @@ import (
 	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
 	"github.com/johnuopini/secret-gate/internal/store"
+	"github.com/johnuopini/secret-gate/internal/writegrant"
 )
 
 type fakeTelegram struct {
-	sends       int
-	edits       int
-	blocked     int
-	blockedText string
+	sends        int
+	edits        int
+	blocked      int
+	blockedText  string
+	sentWindow   time.Duration
+	answers      []string
+	autoWrites   []writegrant.Match
+	windowEdits  int
+	reminders    int
+	expiredEdits int
+	revoked      int
+	failAudit    bool
 }
 
-func (f *fakeTelegram) SendApprovalRequest(*models.ApprovalRequest, string, time.Duration) (int, error) {
+func (f *fakeTelegram) SendApprovalRequest(_ *models.ApprovalRequest, _ string, window time.Duration) (int, error) {
 	f.sends++
+	f.sentWindow = window
 	return 123, nil
 }
 
@@ -90,7 +100,7 @@ func TestHandleSecretAppliesApprovedMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Secrets = []models.SecretRequest{{SecretName: "Release context", Vault: "Agents"}}
-	req.Mutation = &models.ItemMutation{Operation: "create", Fields: map[string]string{"notes": "context"}}
+	req.Mutations = []models.ItemMutation{{Item: "Release context", Operation: "create", Fields: map[string]string{"notes": "context"}}}
 	req.Approve()
 	if err := requests.Save(req); err != nil {
 		t.Fatal(err)

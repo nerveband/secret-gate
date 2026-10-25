@@ -261,3 +261,34 @@ func TestEnrichRequestContextPreservesExplicitIdentity(t *testing.T) {
 		t.Fatalf("context = %#v", got)
 	}
 }
+
+func TestSubmitWritePayloadShapes(t *testing.T) {
+	var got []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = append(got, body)
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "tok", "status_url": "http://gate/status/tok"})
+	}))
+	defer server.Close()
+	pc := NewHTTPProxyClient(server.URL, nil, 0).(WriteClient)
+
+	single := []ItemWrite{{Item: "Expo token", Operation: "create", Fields: map[string]string{"token": "v"}}}
+	if _, err := pc.SubmitWrite(context.Background(), "AI Agents", "store", single, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	batch := append(single, ItemWrite{Item: "ASC key", Operation: "update", Fields: map[string]string{"p8": "v"}})
+	if _, err := pc.SubmitWrite(context.Background(), "AI Agents", "store", batch, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	// Single writes keep the original wire shape for older servers.
+	if got[0]["secret_name"] != "Expo token" || got[0]["mutation"] == nil || got[0]["mutations"] != nil {
+		t.Fatalf("single payload = %v", got[0])
+	}
+	// Batches carry no secret_name or secrets, so a server without batch
+	// support rejects them instead of treating them as a read.
+	if got[1]["secret_name"] != "" || got[1]["secrets"] != nil || got[1]["mutation"] != nil || len(got[1]["mutations"].([]any)) != 2 {
+		t.Fatalf("batch payload = %v", got[1])
+	}
+}

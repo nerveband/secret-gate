@@ -132,7 +132,11 @@ Then run the `server` binary with the required environment variables set.
 | `PORT` | No | `8080` | HTTP listen port |
 | `REQUEST_TTL` | No | `15m` | How long approval requests remain valid |
 | `CLEANUP_INTERVAL` | No | `5m` | Interval for cleaning up expired requests |
-| `AUTO_APPROVE_TTL` | No | `30m` | Duration for Telegram "Approve window" sessions |
+| `AUTO_APPROVE_TTL` | No | `30m` | Duration for Telegram "Approve window" sessions (reads only) |
+| `WRITE_REQUEST_TTL` | No | `1h` | How long a write request waits for a tap |
+| `WRITE_REMINDER_BEFORE` | No | `10m` | When to send the Telegram reminder for a pending write; `0` disables it |
+| `WRITE_WINDOW_TTL` | No | `15m` | Length of the "Approve + writes" window; `0` hides the button |
+| `WRITE_FOLLOWUP_TTL` | No | `15m` | How long updates to an item just written by the same requester ride on that approval; `0` disables it |
 
 ## Client Usage
 
@@ -185,6 +189,27 @@ Write requests are checked against the target vault before approval. If
 Connect reports read-only access, or write access cannot be verified
 without mutation, Secret Gate rejects the request and sends a Telegram
 audit warning with no approval buttons.
+
+Writes take values on stdin only. Several items known together go into one
+approval with `write batch` (up to 10 items in one vault). `--no-wait`
+returns a token at once; the server keeps the values while approval is
+pending and the local daemon finishes the write after the tap, so the agent
+does not have to hold them:
+
+```bash
+echo '{"fields":{"otp":"<seed>"}}' \
+  | secret-gate write create --item "WordPress.org 2FA" --vault "AI Agents" --reason "store 2FA seed" --stdin --no-wait
+secret-gate request wait <token>
+
+echo '{"items":[{"item":"Play key","operation":"create","fields":{"credential":"<json>"}},
+                {"item":"Expo token","operation":"create","fields":{"token":"<value>"}}]}' \
+  | secret-gate write batch --vault "AI Agents" --reason "store release credentials" --stdin
+```
+
+Write approvals in Telegram offer `Approve once`, `Approve + writes 15m`,
+and `Deny`. Pending writes wait up to an hour, get one reminder ten minutes
+before expiry, and the message changes to "Expired" when the request lapses.
+See [docs/write-ux.md](docs/write-ux.md) for what each approval covers.
 
 Managed SSH commands use an isolated OpenSSH configuration (`-F /dev/null`) with explicit host, port, identity, batch mode, and host-key options. User-level `Include`, `ProxyJump`, and host aliases are intentionally not applied; pass the concrete destination to `--host`.
 
@@ -378,7 +403,8 @@ For detailed request/response schemas, see the OpenAPI spec at `/openapi.json` o
 
 - **Memory-only cache.** Cached secret values stay in the daemon process. SSH-agent integration uses a mode-`0600` temporary private-key file because `ssh-add` accepts a path; the file is removed immediately after `ssh-add` returns. If `ssh-add` fails, `ssh_with_secret` uses another short-lived mode-`0600` file with `ssh -i` and removes it when SSH exits.
 - **Controlled agent visibility.** `exec_with_secret` and `ssh_with_secret` keep values out of agent context. `read_item_fields` and `get_otp` return only values covered by the approved item/field request because some tasks require the agent to read them.
-- **Approval-gated writes.** Create and update values stay in server memory while pending, are omitted from Telegram and logs, and are sent to 1Password only after approval.
+- **Approval-gated writes.** Create and update values stay in server memory while pending, are omitted from Telegram and logs, are sent to 1Password only after approval, and are dropped from memory once written, denied, or expired. Telegram shows item names and field labels so the approver knows what is being stored.
+- **Scoped write grants.** Writes never ride on the read window. A write is approved by a tap, by an "Approve + writes" window (new items only, same machine, requester IP, Paseo agent ID, and vault, revocable from Telegram), or by a same-item follow-up grant (updates to an item that requester just wrote). Each auto-approved write posts a Telegram audit message, and the write falls back to a normal approval if that message cannot be sent. Grants are in memory and end on server restart. See [docs/write-ux.md](docs/write-ux.md).
 - **Unix socket IPC.** The daemon listens on a Unix socket with `0600` permissions, accessible only to the owning user.
 - **SSH agent integration.** SSH keys are added to ssh-agent with a TTL that matches the cache expiry, so they are automatically removed.
 - **Telegram approval gate.** Secret access requires explicit human approval through Telegram inline buttons. The optional "Approve window" button creates a global, in-memory approval session that approves all requests until the window expires.

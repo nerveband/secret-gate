@@ -47,6 +47,7 @@ Commands:
   otp exec           Run a command with the current OTP code as an env var
   write create       Create a 1Password item (values via --stdin, Telegram-approved)
   write update       Update a 1Password item (values via --stdin, Telegram-approved)
+  write batch        Create or update up to 10 items behind one Telegram approval
   request submit     Submit an approval request (--no-wait for async)
   request status     Check a submitted request by token
   request wait       Resume waiting on a submitted request

@@ -63,7 +63,7 @@ func TestSendApprovalRequestIncludesAutoApproveButton(t *testing.T) {
 	}
 }
 
-func TestMutationApprovalHasNoWindowButton(t *testing.T) {
+func TestWriteApprovalOffersWriteWindowNotReadWindow(t *testing.T) {
 	var sent SendMessageRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
@@ -75,15 +75,59 @@ func TestMutationApprovalHasNoWindowButton(t *testing.T) {
 	defer server.Close()
 	client := New("token", 456)
 	client.baseURL = server.URL
-	req := &models.ApprovalRequest{ID: "write-id", SecretName: "note", Vault: "vault", ExpiresAt: time.Now().Add(time.Minute), Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notesPlain": "not shown"}}}
-	if _, err := client.SendApprovalRequest(req, "", 30*time.Minute); err != nil {
+	req := &models.ApprovalRequest{ID: "write-id", SecretName: "Play key", Vault: "AI Agents", ExpiresAt: time.Now().Add(time.Minute), Mutations: []models.ItemMutation{
+		{Item: "Play key", Operation: "create", Fields: map[string]string{"json": "play-secret-value"}},
+		{Item: "ASC key", Operation: "update", Fields: map[string]string{"p8": "asc-secret-value", "key_id": "asc-key-id-value"}},
+	}}
+
+	if _, err := client.SendApprovalRequest(req, "", 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	row := sent.ReplyMarkup.InlineKeyboard[0]
+	if len(row) != 2 || row[1].CallbackData != "approve_writes:write-id" || row[1].Text != "✅ Approve + writes 15m" {
+		t.Fatalf("write approval row = %#v", row)
+	}
+	for _, want := range []string{"Write 2 items in the \"AI Agents\" vault", "• Create \"Play key\" (fields: json)", "• Update \"ASC key\" (fields: key_id, p8)"} {
+		if !strings.Contains(sent.Text, want) {
+			t.Errorf("message missing %q:\n%s", want, sent.Text)
+		}
+	}
+	for _, value := range []string{"play-secret-value", "asc-secret-value", "asc-key-id-value"} {
+		if strings.Contains(sent.Text, value) {
+			t.Fatalf("mutation value %q leaked into Telegram", value)
+		}
+	}
+
+	if _, err := client.SendApprovalRequest(req, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(sent.ReplyMarkup.InlineKeyboard[0]) != 1 {
-		t.Fatalf("write approval offered a window: %#v", sent.ReplyMarkup.InlineKeyboard[0])
+		t.Fatalf("disabled write window still offered: %#v", sent.ReplyMarkup.InlineKeyboard[0])
 	}
-	if strings.Contains(sent.Text, "not shown") {
-		t.Fatal("mutation value leaked into Telegram")
+}
+
+func TestReminderRepliesToOriginalWithoutValues(t *testing.T) {
+	var sent SendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":124,"chat":{"id":456},"date":1}}`))
+	}))
+	defer server.Close()
+	client := New("token", 456)
+	client.baseURL = server.URL
+	req := &models.ApprovalRequest{ID: "write-id", Vault: "AI Agents", TelegramMsgID: 77, ExpiresAt: time.Now().Add(10 * time.Minute),
+		Mutations: []models.ItemMutation{{Item: "WordPress.org 2FA", Operation: "create", Fields: map[string]string{"otp": "JBSWY3DPEHPK3PXP"}}}}
+	if err := client.SendReminder(req); err != nil {
+		t.Fatal(err)
+	}
+	if sent.ReplyParameters == nil || sent.ReplyParameters.MessageID != 77 {
+		t.Fatalf("reminder is not a reply to the request: %#v", sent.ReplyParameters)
+	}
+	if !strings.Contains(sent.Text, "Create \"WordPress.org 2FA\"") || !strings.Contains(sent.Text, "Fields: otp") || strings.Contains(sent.Text, "JBSWY3DPEHPK3PXP") {
+		t.Fatalf("reminder text = %s", sent.Text)
 	}
 }
 

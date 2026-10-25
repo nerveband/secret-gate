@@ -25,6 +25,12 @@ type Config struct {
 	CleanupInterval time.Duration
 	AutoApproveTTL  time.Duration
 
+	// Write approval settings
+	WriteRequestTTL     time.Duration // how long a write request waits for a tap
+	WriteWindowTTL      time.Duration // "Approve + writes" window length; 0 hides the button
+	WriteFollowUpTTL    time.Duration // same-requester updates to just-written items; 0 disables
+	WriteReminderBefore time.Duration // reminder lead time before a write expires; 0 disables
+
 	// Long-polling settings
 	LongPollMaxWait time.Duration
 
@@ -44,6 +50,11 @@ func Load() (*Config, error) {
 		CleanupInterval:  getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
 		AutoApproveTTL:   getDurationDefault("AUTO_APPROVE_TTL", 30*time.Minute),
 		LongPollMaxWait:  getDurationDefault("LONG_POLL_MAX_WAIT", 25*time.Second),
+
+		WriteRequestTTL:     getDurationDefault("WRITE_REQUEST_TTL", time.Hour),
+		WriteWindowTTL:      getDurationDefault("WRITE_WINDOW_TTL", 15*time.Minute),
+		WriteFollowUpTTL:    getDurationDefault("WRITE_FOLLOWUP_TTL", 15*time.Minute),
+		WriteReminderBefore: getDurationDefault("WRITE_REMINDER_BEFORE", 10*time.Minute),
 	}
 
 	// Parse Telegram chat ID

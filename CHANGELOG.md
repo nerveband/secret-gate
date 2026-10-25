@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0 (2026-10-25)
+
+Fewer Telegram taps for writes without letting writes approve silently. Design and threat model: [docs/write-ux.md](docs/write-ux.md).
+
+### Added
+- `write batch` (CLI) and `write_items` (MCP): up to 10 creates or updates in one vault behind one approval. Telegram lists every item and field label, never values. A partial failure resumes at the first unwritten item on retry.
+- "✅ Approve + writes 15m" on write approvals (`WRITE_WINDOW_TTL`, `0` hides it). The window approves new items from the same machine, requester IP, Paseo agent ID, and vault. Each covered write posts an audit message with a "🛑 Revoke write window" button.
+- Same-item follow-up (`WRITE_FOLLOWUP_TTL`, default 15m): after an approved write, the same requester may update those items without a tap. Audited; follow-ups do not extend themselves.
+- `--no-wait` on `write create`, `write update`, and `write batch`: returns a token and the local daemon completes the write after approval, so the agent can drop the values. Resume with `request wait <token>`.
+- Write requests wait `WRITE_REQUEST_TTL` (default 1h) and get one Telegram reminder `WRITE_REMINDER_BEFORE` (default 10m) before expiry. Expired requests have their Telegram message changed to "Expired" with no buttons.
+- Write approval messages show field labels.
+
+### Changed
+- Pending write values are dropped from server memory as soon as the write completes, is denied, or expires.
+- Submission log lines include the action, item count, and expiry; expiries, reminders, write windows, auto-approvals, and revocations are logged.
+
+### Fixed
+- Tapping Approve on an expired request no longer shows "Approved" for a write that can never run; the tap is refused and the message is marked expired.
+- An identical request made after an earlier one was approved no longer receives the old request's token (the fingerprint index went stale on update).
+- Telegram transport errors no longer write the bot API URL, which contains the bot token, to the server log.
+
 ## v0.5.5 (2026-10-24)
 
 ### Fixed

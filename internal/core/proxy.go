@@ -91,6 +91,7 @@ type requestPayload struct {
 	Secrets    []secretRequestPayload `json:"secrets,omitempty"`
 	Context    RequestContext         `json:"context,omitempty"`
 	Mutation   *mutationPayload       `json:"mutation,omitempty"`
+	Mutations  []ItemWrite            `json:"mutations,omitempty"`
 }
 
 type secretRequestPayload struct {
@@ -246,23 +247,45 @@ func (p *httpProxyClient) Request(ctx context.Context, secretName, vault, reason
 }
 
 func (p *httpProxyClient) Write(ctx context.Context, secretName, vault, reason, operation, category string, fields map[string]string, requestContext RequestContext) (*RequestResult, error) {
-	hostname, _ := os.Hostname()
-	requestContext = enrichRequestContext(requestContext, hostname, reason)
-	payload := requestPayload{
-		SecretName: secretName, Vault: vault, Machine: hostname, Reason: reason,
-		Action:   operation,
-		Secrets:  []secretRequestPayload{{SecretName: secretName, Vault: vault}},
-		Context:  requestContext,
-		Mutation: &mutationPayload{Operation: operation, Category: category, Fields: fields},
-	}
-	pending, err := p.post(payload)
+	return p.WriteItems(ctx, vault, reason, []ItemWrite{{Item: secretName, Operation: operation, Category: category, Fields: fields}}, requestContext)
+}
+
+func (p *httpProxyClient) WriteItems(ctx context.Context, vault, reason string, items []ItemWrite, requestContext RequestContext) (*RequestResult, error) {
+	pending, err := p.SubmitWrite(ctx, vault, reason, items, requestContext)
 	if err != nil {
 		return nil, err
 	}
-	return p.waitLoop(ctx, pending, secretName, vault, false, nil)
+	return p.waitLoop(ctx, pending, writeLabel(items), vault, false, nil)
 }
 
-// --- AsyncProxyClient implementation ---
+// SubmitWrite sends one approval request for items. A single item uses the
+// original mutation shape; several use mutations[] with no secret_name, so a
+// server without batch support rejects the request instead of misreading it.
+func (p *httpProxyClient) SubmitWrite(_ context.Context, vault, reason string, items []ItemWrite, requestContext RequestContext) (*PendingRequest, error) {
+	hostname, _ := os.Hostname()
+	requestContext = enrichRequestContext(requestContext, hostname, reason)
+	payload := requestPayload{Vault: vault, Machine: hostname, Reason: reason, Context: requestContext}
+	if len(items) == 1 {
+		item := items[0]
+		payload.SecretName = item.Item
+		payload.Action = item.Operation
+		payload.Secrets = []secretRequestPayload{{SecretName: item.Item, Vault: vault}}
+		payload.Mutation = &mutationPayload{Operation: item.Operation, Category: item.Category, Fields: item.Fields}
+	} else {
+		payload.Action = "write"
+		payload.Mutations = items
+	}
+	return p.post(payload)
+}
+
+// writeLabel names a write for results, the ledger, and the local watcher.
+func writeLabel(items []ItemWrite) string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Item)
+	}
+	return strings.Join(names, ", ")
+}
 
 func (p *httpProxyClient) Submit(ctx context.Context, secretName, vault, reason string, fields []string, requestContext RequestContext) (*PendingRequest, error) {
 	hostname, _ := os.Hostname()

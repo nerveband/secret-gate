@@ -87,16 +87,34 @@ only when you need pipes or expansion. Use `--dry-run` on `exec`, `ssh`,
 
 ```bash
 echo '{"category":"API_CREDENTIAL","fields":{"credential":"<value>"}}' \
-  | secret-gate write create --item "ci-token" --vault "Infra" --reason "store the new CI token" --stdin
+  | secret-gate write create --item "ci-token" --vault "Infra" --reason "store the new CI token" --stdin --no-wait
+secret-gate request wait <token>
+
+# Several values known together: one approval for all of them
+echo '{"items":[{"item":"Play key","operation":"create","fields":{"credential":"<json>"}},{"item":"Expo token","operation":"create","fields":{"token":"<value>"}}]}' \
+  | secret-gate write batch --vault "Infra" --reason "store release credentials" --stdin --no-wait
 ```
 
-Writes always need one-request approval and an explicit `--vault`.
+Every write needs a human approval and an explicit `--vault`. To keep
+taps down:
+- Put values you already have into one `write batch` (up to 10 items, each
+  item once). The approver sees item names and field labels, never values.
+- Use `--no-wait`, then drop the values: the server holds them while
+  approval is pending (up to 1 hour by default) and the local daemon
+  finishes the write after the tap. Resume with `request wait <token>`.
+- An update to an item you just wrote (for example recovery codes added to
+  a new 2FA item) is approved automatically for 15 minutes, from the same
+  machine and agent only. Other updates still need a tap.
+- If the approver tapped `Approve + writes`, new items you create in the
+  same vault during that window are approved automatically and audited in
+  Telegram. Do not rely on it: it can be revoked at any time.
+
 Before creating an approval, Secret Gate verifies that the configured
 1Password Connect token can write to that vault. An unavailable or
 unverifiable capability returns `vault_write_unavailable` or
 `write_capability_unverified` and sends a Telegram audit warning without
 approval buttons. Preview with `--dry-run` (labels only). Never put values
-in the reason.
+in the reason or in field labels.
 
 Secret Gate also checks the item against 1Password Connect before asking for
 approval, and returns `validation` without sending a Telegram message when:
@@ -125,7 +143,8 @@ hyphens, underscores. Interchangeable groups:
 
 `search_secrets` → `inspect_fields` → `request_secret` (with reason and
 narrow `fields`) → `exec_with_secret` / `ssh_with_secret` /
-`read_item_fields` / `get_otp` → `write_item` for writes. Same rules.
+`read_item_fields` / `get_otp` → `write_item` or `write_items` (batch) for
+writes. Same rules.
 
 ## Do not
 

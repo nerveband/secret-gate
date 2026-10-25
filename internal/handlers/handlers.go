@@ -20,12 +20,21 @@ import (
 	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/opconnect"
 	"github.com/johnuopini/secret-gate/internal/store"
+	"github.com/johnuopini/secret-gate/internal/writegrant"
 )
 
 type telegramClient interface {
 	SendApprovalRequest(*models.ApprovalRequest, string, time.Duration) (int, error)
 	SendAutoApprovedNotification(*models.ApprovalRequest, string, time.Time) error
 	UpdateApprovalRequest(int, *models.ApprovalRequest, time.Duration) error
+	AnswerCallbackQuery(string, string) error
+	UpdateMessageApproved(int, *models.ApprovalRequest, string) error
+	UpdateMessageDenied(int, *models.ApprovalRequest, string) error
+	UpdateMessageApprovedWriteWindow(int, *models.ApprovalRequest, string, writegrant.Window) error
+	UpdateMessageExpired(int, *models.ApprovalRequest) error
+	SendWriteAutoApproved(*models.ApprovalRequest, writegrant.Match) error
+	SendReminder(*models.ApprovalRequest) error
+	SendWindowRevoked(writegrant.Window, string, int) error
 	SendWriteBlocked(*models.ApprovalRequest, string) error
 }
 
@@ -38,6 +47,7 @@ type Handler struct {
 	sessions  *autosession.Store
 	requestMu sync.Mutex
 	log       *logger.Logger
+	grants    *writegrant.Store
 }
 
 // New creates a new Handler
@@ -49,6 +59,7 @@ func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Co
 		config:   cfg,
 		sessions: sessions,
 		log:      logger.New(),
+		grants:   writegrant.NewStore(),
 	}
 }
 
@@ -98,6 +109,8 @@ type BatchRequestPayload struct {
 	Action   string                `json:"action,omitempty"`
 	Context  models.RequestContext `json:"context,omitempty"`
 	Mutation *models.ItemMutation  `json:"mutation,omitempty"`
+	// Batch writes: one approval for several items in one explicit vault.
+	Mutations []models.ItemMutation `json:"mutations,omitempty"`
 }
 
 // RequestResponse is the response for a new secret request
@@ -133,6 +146,10 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// MaxBatchWrites caps how many items one write approval may cover, so the
+// Telegram message stays reviewable.
+const MaxBatchWrites = 10
+
 // HandleRequest handles POST /request
 func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -151,6 +168,11 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	if len(secrets) == 0 && payload.SecretName != "" {
 		secrets = []models.SecretRequest{{SecretName: payload.SecretName, Vault: payload.Vault}}
 	}
+	secrets, mutations, msg := normalizeWrites(payload, secrets)
+	if msg != "" {
+		h.writeError(w, http.StatusBadRequest, "invalid_mutation", msg)
+		return
+	}
 	if len(secrets) == 0 {
 		h.writeError(w, http.StatusBadRequest, "missing_fields", "secret_name or secrets[] is required")
 		return
@@ -160,7 +182,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.Mutation == nil {
+	if len(mutations) == 0 {
 		for i := range secrets {
 			_, actualVault, actualTitle, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
 			if err != nil {
@@ -176,13 +198,17 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	if requesterIP == "" {
 		requesterIP = r.RemoteAddr
 	}
+	ttl := h.config.RequestTTL
+	if len(mutations) > 0 && h.config.WriteRequestTTL > 0 {
+		ttl = h.config.WriteRequestTTL
+	}
 	req, err := models.NewApprovalRequest(
 		secrets[0].SecretName,
 		secrets[0].Vault,
 		payload.Machine,
 		normalizeRequesterIP(requesterIP),
 		payload.Reason,
-		h.config.RequestTTL,
+		ttl,
 	)
 	if err != nil {
 		h.log.Error("Failed to create request", logger.F("error", err.Error()))
@@ -195,20 +221,12 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		req.Action = "read"
 	}
 	req.Context = payload.Context
-	req.Mutation = payload.Mutation
+	req.Mutations = mutations
 
-	if req.Mutation != nil {
-		if len(secrets) != 1 || secrets[0].Vault == "" || secrets[0].Vault == "_auto_" {
-			h.writeError(w, http.StatusBadRequest, "invalid_mutation", "writes require exactly one item and an explicit vault")
-			return
-		}
-		if req.Mutation.Operation != "create" && req.Mutation.Operation != "update" {
-			h.writeError(w, http.StatusBadRequest, "invalid_mutation", "mutation operation must be create or update")
-			return
-		}
-		req.Action = req.Mutation.Operation
-		if req.Mutation.Operation == "create" {
-			req.Mutation.Category = opconnect.NormalizeCategory(req.Mutation.Category)
+	if req.IsWrite() {
+		req.Action = "write"
+		if len(req.Mutations) == 1 {
+			req.Action = req.Mutations[0].Operation
 		}
 		capability := h.opClient.CheckWriteCapability(req.Vault)
 		if !capability.Allowed {
@@ -222,20 +240,27 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, status, capability.Code, capability.Message)
 			return
 		}
-		if precheckErr := h.opClient.PrecheckMutation(req.Vault, req.SecretName, req.Mutation.Operation, req.Mutation.Category, req.Mutation.Fields); precheckErr != nil {
-			var verr *opconnect.ValidationError
-			if errors.As(precheckErr, &verr) {
-				h.writeError(w, http.StatusUnprocessableEntity, "validation", verr.Message)
+		for _, m := range req.Mutations {
+			if precheckErr := h.opClient.PrecheckMutation(req.Vault, m.Item, m.Operation, m.Category, m.Fields); precheckErr != nil {
+				var verr *opconnect.ValidationError
+				if errors.As(precheckErr, &verr) {
+					message := verr.Message
+					if len(req.Mutations) > 1 {
+						message = fmt.Sprintf("%q: %s", m.Item, verr.Message)
+					}
+					h.writeError(w, http.StatusUnprocessableEntity, "validation", message)
+					return
+				}
+				h.writeError(w, http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval.")
 				return
 			}
-			h.writeError(w, http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval.")
-			return
 		}
 	}
 	req.Fingerprint = fingerprintRequest(req)
 
-	// Mutations always require a one-request approval.
-	if session, ok := h.sessions.Match(); ok && req.Mutation == nil {
+	// Reads may ride on the global read window. Writes never do: they need a
+	// tap, a write window for this requester and vault, or a follow-up grant.
+	if session, ok := h.sessions.Match(); ok && !req.IsWrite() {
 		req.Approve()
 		if err := h.store.Save(req); err != nil {
 			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
@@ -252,21 +277,24 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if req.IsWrite() && h.autoApproveWrite(w, req) {
+		return
+	}
 
-	stored, reused, err := h.store.SaveOrRenew(req, h.config.RequestTTL)
+	stored, reused, err := h.store.SaveOrRenew(req, ttl)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
 		return
 	}
 	req = stored
 	if reused {
-		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, h.config.AutoApproveTTL); err != nil {
+		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, h.windowTTL(req)); err != nil {
 			h.log.Error("Failed to refresh Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID, "telegram_message_id", req.TelegramMsgID))
 			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing Telegram approval request.")
 			return
 		}
 	} else {
-		msgID, sendErr := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.config.AutoApproveTTL)
+		msgID, sendErr := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.windowTTL(req))
 		if sendErr != nil {
 			_ = h.store.Delete(req.Token)
 			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to deliver the Telegram approval request.")
@@ -286,8 +314,11 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("Submitted approval request", logger.F(
 		"request_id", req.ID,
 		"request_reused", reused,
+		"action", req.Action,
+		"items", len(req.Secrets),
 		"machine", req.RequesterMachine,
 		"requester_ip", req.RequesterIP,
+		"expires_at", req.ExpiresAt.Format(time.RFC3339),
 	))
 	h.writeJSON(w, http.StatusAccepted, RequestResponse{
 		Token:         req.Token,
@@ -298,6 +329,112 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// normalizeWrites turns the legacy single mutation or a mutations[] batch
+// into one list with item titles set. It returns a message on invalid input.
+func normalizeWrites(payload BatchRequestPayload, secrets []models.SecretRequest) ([]models.SecretRequest, []models.ItemMutation, string) {
+	var mutations []models.ItemMutation
+	switch {
+	case payload.Mutation != nil && len(payload.Mutations) > 0:
+		return nil, nil, "send mutation or mutations, not both"
+	case len(payload.Mutations) > 0:
+		if len(secrets) > 0 {
+			return nil, nil, "batch writes take their items from mutations[]; omit secret_name and secrets"
+		}
+		if payload.Vault == "" || payload.Vault == "_auto_" {
+			return nil, nil, "writes require an explicit vault"
+		}
+		if len(payload.Mutations) > MaxBatchWrites {
+			return nil, nil, fmt.Sprintf("a batch may write at most %d items", MaxBatchWrites)
+		}
+		seen := make(map[string]bool, len(payload.Mutations))
+		for _, m := range payload.Mutations {
+			m.Item = strings.TrimSpace(m.Item)
+			if m.Item == "" {
+				return nil, nil, "every batch entry needs an item title"
+			}
+			if seen[m.Item] {
+				return nil, nil, fmt.Sprintf("%q appears twice in the batch; merge its fields into one entry", m.Item)
+			}
+			seen[m.Item] = true
+			mutations = append(mutations, m)
+			secrets = append(secrets, models.SecretRequest{SecretName: m.Item, Vault: payload.Vault})
+		}
+	case payload.Mutation != nil:
+		if len(secrets) != 1 || secrets[0].Vault == "" || secrets[0].Vault == "_auto_" {
+			return nil, nil, "writes require exactly one item and an explicit vault"
+		}
+		m := *payload.Mutation
+		m.Item = secrets[0].SecretName
+		mutations = []models.ItemMutation{m}
+	default:
+		return secrets, nil, ""
+	}
+	for i := range mutations {
+		switch mutations[i].Operation {
+		case "create":
+			mutations[i].Category = opconnect.NormalizeCategory(mutations[i].Category)
+		case "update":
+		default:
+			return nil, nil, "mutation operation must be create or update"
+		}
+	}
+	return secrets, mutations, ""
+}
+
+// windowTTL is the window the approver may open from req's Telegram message.
+func (h *Handler) windowTTL(req *models.ApprovalRequest) time.Duration {
+	if req.IsWrite() {
+		return h.config.WriteWindowTTL
+	}
+	return h.config.AutoApproveTTL
+}
+
+// autoApproveWrite approves req when a live write window or follow-up grant
+// covers every write in it. The Telegram audit message must be delivered
+// first: if it fails, the write falls back to a normal approval request.
+func (h *Handler) autoApproveWrite(w http.ResponseWriter, req *models.ApprovalRequest) bool {
+	match, ok := h.grants.Match(writegrant.ScopeOf(req), req.Mutations)
+	if !ok {
+		return false
+	}
+	req.Approve()
+	req.Approver = match.Approver
+	req.AutoApproved = match.Kind
+	req.WriteWindowID = match.WindowID
+	if err := h.tgClient.SendWriteAutoApproved(req, match); err != nil {
+		h.log.Error("Failed to send write auto-approval audit; asking for a tap instead", logger.F("error", err.Error(), "request_id", req.ID))
+		req.Status = models.StatusPending
+		req.RespondedAt = nil
+		req.Approver, req.AutoApproved, req.WriteWindowID = "", "", ""
+		return false
+	}
+	if err := h.store.Save(req); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
+		return true
+	}
+	h.log.Info("Write auto-approved", logger.F(
+		"request_id", req.ID,
+		"approved_by", match.Kind,
+		"window_id", match.WindowID,
+		"source_request_id", match.Source,
+		"items", len(req.Mutations),
+		"vault", req.Vault,
+		"machine", req.RequesterMachine,
+		"requester_ip", req.RequesterIP,
+	))
+	message := "Write auto-approved: it updates an item written under an earlier approval."
+	if match.Kind == models.AutoApprovedWriteWindow {
+		message = "Write auto-approved by the write window opened in Telegram."
+	}
+	h.writeJSON(w, http.StatusAccepted, RequestResponse{
+		Token:     req.Token,
+		StatusURL: h.config.WebhookBaseURL + "/status/" + req.Token,
+		ExpiresAt: req.ExpiresAt.Format(time.RFC3339),
+		Message:   message,
+	})
+	return true
+}
+
 func fingerprintRequest(req *models.ApprovalRequest) string {
 	type fingerprintSecret struct {
 		Name   string
@@ -305,6 +442,7 @@ func fingerprintRequest(req *models.ApprovalRequest) string {
 		Fields []string
 	}
 	type fingerprintMutation struct {
+		Item      string
 		Operation string
 		Category  string
 		Labels    []string
@@ -321,24 +459,19 @@ func fingerprintRequest(req *models.ApprovalRequest) string {
 		}
 		return secrets[i].Name < secrets[j].Name
 	})
-	var mutation *fingerprintMutation
-	if req.Mutation != nil {
-		labels := make([]string, 0, len(req.Mutation.Fields))
-		for label := range req.Mutation.Fields {
-			labels = append(labels, label)
-		}
-		sort.Strings(labels)
-		mutation = &fingerprintMutation{Operation: req.Mutation.Operation, Category: req.Mutation.Category, Labels: labels}
+	var mutations []fingerprintMutation
+	for _, m := range req.Mutations {
+		mutations = append(mutations, fingerprintMutation{Item: m.Item, Operation: m.Operation, Category: m.Category, Labels: m.Labels()})
 	}
 	canonical := struct {
-		Action   string
-		Secrets  []fingerprintSecret
-		Context  models.RequestContext
-		Reason   string
-		Mutation *fingerprintMutation
+		Action    string
+		Secrets   []fingerprintSecret
+		Context   models.RequestContext
+		Reason    string
+		Mutations []fingerprintMutation
 	}{
 		Action: req.Action, Secrets: secrets, Context: req.Context,
-		Reason: strings.Join(strings.Fields(req.Reason), " "), Mutation: mutation,
+		Reason: strings.Join(strings.Fields(req.Reason), " "), Mutations: mutations,
 	}
 	payload, _ := json.Marshal(canonical)
 	sum := sha256.Sum256(payload)
@@ -480,47 +613,8 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
 		return
 	}
-	if req.Mutation != nil {
-		claimed, state, claimErr := h.store.ClaimMutation(token)
-		if claimErr != nil {
-			h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
-			return
-		}
-		if state == "completed" {
-			h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{
-				"status": "completed", "operation": claimed.Mutation.Operation,
-				"item": claimed.MutationItem, "vault": claimed.Secrets[0].Vault,
-			}})
-			return
-		}
-		if state == "executing" {
-			h.writeError(w, http.StatusConflict, "mutation_in_progress", "Approved mutation is already being executed")
-			return
-		}
-		if state == "failed" {
-			h.writeError(w, http.StatusInternalServerError, "mutation_outcome_unknown", "Approved mutation did not reach a recoverable completion state")
-			return
-		}
-		s := claimed.Secrets[0]
-		item, mutationErr := h.opClient.PutItem(s.Vault, s.SecretName, claimed.Mutation.Operation, claimed.Mutation.Category, claimed.Mutation.Fields)
-		if mutationErr != nil {
-			_ = h.store.ReleaseMutation(token)
-			h.log.Error("Failed to write 1Password item", logger.F("error", mutationErr.Error(), "request_id", req.ID, "item", s.SecretName, "vault", s.Vault))
-			var verr *opconnect.ValidationError
-			if errors.As(mutationErr, &verr) {
-				h.writeError(w, http.StatusUnprocessableEntity, "validation", "1Password rejected the item: "+verr.Message)
-				return
-			}
-			h.writeError(w, http.StatusInternalServerError, "item_write_failed", "Failed to write item to 1Password")
-			return
-		}
-		if err := h.store.CompleteMutation(token, item.Title); err != nil {
-			h.log.Error("Failed to record completed 1Password write", logger.F("error", err.Error(), "request_id", req.ID))
-			h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
-			return
-		}
-		h.log.Info("1Password item written", logger.F("request_id", req.ID, "item", item.Title, "vault", s.Vault, "operation", claimed.Mutation.Operation))
-		h.writeJSON(w, http.StatusOK, map[string]any{"mutation": map[string]any{"status": "completed", "operation": claimed.Mutation.Operation, "item": item.Title, "vault": s.Vault}})
+	if req.IsWrite() {
+		h.executeWrites(w, token)
 		return
 	}
 
@@ -602,6 +696,258 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("Secret retrieved", logger.F("request_id", req.ID, "secret", actualSecret, "vault", actualVault))
 	h.store.Delete(token)
 	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret, Vault: actualVault})
+}
+
+// executeWrites performs an approved write request exactly once. Batch items
+// are written in order; each success is recorded so a retry after a partial
+// failure resumes at the first unwritten item instead of duplicating items.
+func (h *Handler) executeWrites(w http.ResponseWriter, token string) {
+	claimed, state, claimErr := h.store.ClaimMutation(token)
+	if claimErr != nil {
+		h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
+		return
+	}
+	switch state {
+	case "completed":
+		h.writeJSON(w, http.StatusOK, mutationResponse(claimed, claimed.MutationItems))
+		return
+	case "executing":
+		h.writeError(w, http.StatusConflict, "mutation_in_progress", "Approved mutation is already being executed")
+		return
+	case "failed":
+		h.writeError(w, http.StatusInternalServerError, "mutation_outcome_unknown", "Approved mutation did not reach a recoverable completion state")
+		return
+	}
+	written := make([]string, len(claimed.Mutations))
+	copy(written, claimed.MutationItems)
+	for i, m := range claimed.Mutations {
+		if written[i] != "" {
+			continue
+		}
+		item, err := h.opClient.PutItem(claimed.Vault, m.Item, m.Operation, m.Category, m.Fields)
+		if err != nil {
+			_ = h.store.ReleaseMutation(token)
+			h.log.Error("Failed to write 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "item", m.Item, "vault", claimed.Vault, "index", i))
+			prefix := ""
+			if len(claimed.Mutations) > 1 {
+				prefix = fmt.Sprintf("Wrote %d of %d items before %q failed. ", countWritten(written), len(claimed.Mutations), m.Item)
+			}
+			var verr *opconnect.ValidationError
+			if errors.As(err, &verr) {
+				h.writeError(w, http.StatusUnprocessableEntity, "validation", prefix+"1Password rejected the item: "+verr.Message)
+				return
+			}
+			h.writeError(w, http.StatusInternalServerError, "item_write_failed", prefix+"Failed to write item to 1Password")
+			return
+		}
+		written[i] = item.Title
+		if err := h.store.RecordMutationItem(token, i, item.Title); err != nil {
+			h.log.Error("Failed to record written 1Password item", logger.F("error", err.Error(), "request_id", claimed.ID, "index", i))
+			h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
+			return
+		}
+		h.log.Info("1Password item written", logger.F("request_id", claimed.ID, "item", item.Title, "vault", claimed.Vault, "operation", m.Operation, "approved_by", firstNonEmpty(claimed.AutoApproved, "tap")))
+	}
+	if err := h.store.CompleteMutation(token); err != nil {
+		h.log.Error("Failed to record completed 1Password write", logger.F("error", err.Error(), "request_id", claimed.ID))
+		h.writeError(w, http.StatusInternalServerError, "mutation_state_failed", "Item was written but completion state could not be recorded")
+		return
+	}
+	// Follow-up grants come only from tapped or window-approved writes, so a
+	// chain of follow-ups can never extend itself past the original grant.
+	if claimed.AutoApproved != models.AutoApprovedFollowUp {
+		h.grants.GrantFollowUps(writegrant.ScopeOf(claimed), written, claimed.WriteWindowID, claimed.ID, claimed.Approver, h.config.WriteFollowUpTTL)
+	}
+	h.writeJSON(w, http.StatusOK, mutationResponse(claimed, written))
+}
+
+func countWritten(items []string) int {
+	n := 0
+	for _, item := range items {
+		if item != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// mutationResponse keeps the single-write shape older clients expect and
+// lists every item for batches. It never includes values.
+func mutationResponse(req *models.ApprovalRequest, written []string) map[string]any {
+	if len(req.Mutations) == 1 {
+		item := ""
+		if len(written) > 0 {
+			item = written[0]
+		}
+		return map[string]any{"mutation": map[string]any{
+			"status": "completed", "operation": req.Mutations[0].Operation, "item": item, "vault": req.Vault,
+		}}
+	}
+	items := make([]map[string]any, 0, len(req.Mutations))
+	for i, m := range req.Mutations {
+		item := m.Item
+		if i < len(written) && written[i] != "" {
+			item = written[i]
+		}
+		items = append(items, map[string]any{"operation": m.Operation, "item": item})
+	}
+	return map[string]any{"mutations": items, "status": "completed", "vault": req.Vault}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// HandleTelegramAction applies an inline-button tap. data is the button's
+// callback data ("action:id"); approver is the tapping Telegram user.
+func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
+	action, id, ok := strings.Cut(data, ":")
+	if !ok || id == "" {
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Invalid callback data")
+		return
+	}
+	if action == "revoke_window" {
+		window, dropped, open := h.grants.Revoke(id)
+		if !open {
+			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write window already closed")
+			return
+		}
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write window revoked")
+		if err := h.tgClient.SendWindowRevoked(window, approver, dropped); err != nil {
+			h.log.Error("Failed to confirm write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
+		}
+		h.log.Info("Write window revoked", logger.F("window_id", window.ID, "revoked_by", approver, "follow_up_grants_removed", dropped))
+		return
+	}
+
+	req, err := h.store.GetByID(id)
+	if err == store.ErrNotFound {
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request not found or expired")
+		return
+	}
+	if err != nil {
+		h.log.Error("Error fetching request", logger.F("error", err.Error(), "request_id", id))
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Internal error")
+		return
+	}
+	if req.Status == models.StatusExpired || (req.Status == models.StatusPending && req.IsExpired()) {
+		// Approving now would show "Approved" for a request the agent can no
+		// longer complete. Close it instead.
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request expired. Ask the agent to resubmit.")
+		h.closeExpired(time.Now())
+		return
+	}
+	if req.Status != models.StatusPending {
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request already processed")
+		return
+	}
+
+	switch action {
+	case "approve":
+		req.Approve()
+		req.Approver = approver
+		h.updateRequest(req)
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved!")
+		if req.TelegramMsgID != 0 {
+			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
+		}
+		h.log.Info("Request approved", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
+
+	case "approve_window":
+		if req.IsWrite() {
+			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Read windows do not cover writes")
+			return
+		}
+		req.Approve()
+		req.Approver = approver
+		session := h.sessions.Create(approver, h.config.AutoApproveTTL)
+		h.updateRequest(req)
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved with window")
+		if req.TelegramMsgID != 0 {
+			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
+		}
+		h.log.Info("Request approved with auto-approval window", logger.F(
+			"request_id", req.ID,
+			"session_id", session.ID,
+			"approver", approver,
+			"expires_at", session.ExpiresAt.Format(time.RFC3339),
+		))
+
+	case "approve_writes":
+		if !req.IsWrite() || h.config.WriteWindowTTL <= 0 {
+			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write windows are not available for this request")
+			return
+		}
+		window := h.grants.OpenWindow(approver, req.ID, writegrant.ScopeOf(req), h.config.WriteWindowTTL)
+		req.Approve()
+		req.Approver = approver
+		req.WriteWindowID = window.ID
+		h.updateRequest(req)
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved with write window")
+		if req.TelegramMsgID != 0 {
+			_ = h.tgClient.UpdateMessageApprovedWriteWindow(req.TelegramMsgID, req, approver, window)
+		}
+		h.log.Info("Write approved with write window", logger.F(
+			"request_id", req.ID,
+			"window_id", window.ID,
+			"approver", approver,
+			"machine", window.Scope.Machine,
+			"requester_ip", window.Scope.IP,
+			"paseo_agent_id", window.Scope.AgentID,
+			"vault", window.Scope.Vault,
+			"expires_at", window.ExpiresAt.Format(time.RFC3339),
+		))
+
+	case "deny":
+		req.Deny()
+		req.ScrubMutationValues()
+		h.updateRequest(req)
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Denied")
+		if req.TelegramMsgID != 0 {
+			_ = h.tgClient.UpdateMessageDenied(req.TelegramMsgID, req, approver)
+		}
+		h.log.Info("Request denied", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
+
+	default:
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Unknown action")
+	}
+}
+
+func (h *Handler) updateRequest(req *models.ApprovalRequest) {
+	if err := h.store.Update(req); err != nil {
+		h.log.Error("Error updating request", logger.F("error", err.Error(), "request_id", req.ID))
+	}
+}
+
+// SweepPending sends write reminders shortly before expiry, closes the
+// Telegram messages of expired requests, and drops expired write grants.
+func (h *Handler) SweepPending(now time.Time) {
+	for _, req := range h.store.DueReminders(now, h.config.WriteReminderBefore) {
+		if err := h.tgClient.SendReminder(req); err != nil {
+			h.log.Error("Failed to send write approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
+			continue
+		}
+		h.log.Info("Sent write approval reminder", logger.F("request_id", req.ID, "expires_at", req.ExpiresAt.Format(time.RFC3339)))
+	}
+	h.closeExpired(now)
+	h.grants.Cleanup()
+}
+
+func (h *Handler) closeExpired(now time.Time) {
+	for _, req := range h.store.ExpireOverdue(now) {
+		h.log.Info("Request expired", logger.F("request_id", req.ID, "action", req.Action, "items", len(req.Secrets), "machine", req.RequesterMachine))
+		if req.TelegramMsgID == 0 {
+			continue
+		}
+		if err := h.tgClient.UpdateMessageExpired(req.TelegramMsgID, req); err != nil {
+			h.log.Error("Failed to close expired Telegram request", logger.F("error", err.Error(), "request_id", req.ID))
+		}
+	}
 }
 
 // HandleHealth handles GET /health
@@ -830,6 +1176,21 @@ func OpenAPISpec() string {
                       "operation": {"type": "string", "enum": ["create", "update"]},
                       "category": {"type": "string", "description": "1Password category for a new item. Defaults to SECURE_NOTE."},
                       "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+                    }
+                  },
+                  "mutations": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "description": "Batch write: up to 10 creates or updates in the top-level vault behind one approval. Omit secret_name and secrets. Each item may appear once.",
+                    "items": {
+                      "type": "object",
+                      "required": ["item", "operation", "fields"],
+                      "properties": {
+                        "item": {"type": "string", "description": "Item title"},
+                        "operation": {"type": "string", "enum": ["create", "update"]},
+                        "category": {"type": "string"},
+                        "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+                      }
                     }
                   }
                 }

@@ -217,7 +217,7 @@ func TestStoreConcurrentWatchAndUpdate(t *testing.T) {
 func TestClaimMutationAllowsOneConcurrentExecutor(t *testing.T) {
 	s := store.New()
 	req := newTestRequest("tok-mutation", "req-mutation", models.StatusApproved, time.Minute)
-	req.Mutation = &models.ItemMutation{Operation: "create", Fields: map[string]string{"notes": "value"}}
+	req.Mutations = []models.ItemMutation{{Item: "Release context", Operation: "create", Fields: map[string]string{"notes": "value"}}}
 	if err := s.Save(req); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestSaveOrRenewEquivalentPendingRequest(t *testing.T) {
 	first := &models.ApprovalRequest{
 		ID: "first", Token: "token-first", Fingerprint: "same",
 		Status: models.StatusPending, ExpiresAt: firstExpiry,
-		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "same-value"}},
+		Mutations: []models.ItemMutation{{Operation: "update", Fields: map[string]string{"notes": "same-value"}}},
 	}
 	if _, reused, err := requests.SaveOrRenew(first, time.Minute); err != nil || reused {
 		t.Fatalf("first save: reused=%v err=%v", reused, err)
@@ -262,7 +262,7 @@ func TestSaveOrRenewEquivalentPendingRequest(t *testing.T) {
 	second := &models.ApprovalRequest{
 		ID: "second", Token: "token-second", Fingerprint: "same",
 		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
-		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "same-value"}},
+		Mutations: []models.ItemMutation{{Operation: "update", Fields: map[string]string{"notes": "same-value"}}},
 	}
 	got, reused, err := requests.SaveOrRenew(second, 2*time.Minute)
 	if err != nil || !reused {
@@ -277,16 +277,37 @@ func TestSaveOrRenewDoesNotMergeDifferentMutationValues(t *testing.T) {
 	first := &models.ApprovalRequest{
 		ID: "first", Token: "token-first", Fingerprint: "same",
 		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
-		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "first"}},
+		Mutations: []models.ItemMutation{{Operation: "update", Fields: map[string]string{"notes": "first"}}},
 	}
 	_, _, _ = requests.SaveOrRenew(first, time.Minute)
 	second := &models.ApprovalRequest{
 		ID: "second", Token: "token-second", Fingerprint: "same",
 		Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute),
-		Mutation: &models.ItemMutation{Operation: "update", Fields: map[string]string{"notes": "second"}},
+		Mutations: []models.ItemMutation{{Operation: "update", Fields: map[string]string{"notes": "second"}}},
 	}
 	got, reused, err := requests.SaveOrRenew(second, time.Minute)
 	if err != nil || reused || got.Token != second.Token || requests.Count() != 2 {
 		t.Fatalf("second request = %#v, reused=%v err=%v count=%d", got, reused, err, requests.Count())
+	}
+}
+
+func TestSaveOrRenewDoesNotReuseRequestApprovedViaUpdate(t *testing.T) {
+	requests := store.New()
+	first := &models.ApprovalRequest{ID: "first", Token: "token-first", Fingerprint: "same", Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute)}
+	if _, _, err := requests.SaveOrRenew(first, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := requests.GetByID("first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved.Approve()
+	if err := requests.Update(approved); err != nil {
+		t.Fatal(err)
+	}
+	second := &models.ApprovalRequest{ID: "second", Token: "token-second", Fingerprint: "same", Status: models.StatusPending, ExpiresAt: time.Now().Add(time.Minute)}
+	got, reused, err := requests.SaveOrRenew(second, time.Minute)
+	if err != nil || reused || got.Token != "token-second" {
+		t.Fatalf("an approved request was handed out as pending: reused=%v token=%s err=%v", reused, got.Token, err)
 	}
 }

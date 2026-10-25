@@ -63,6 +63,13 @@ type RequestSecretInput struct {
 	Context    RequestContext `json:"context,omitempty"`
 }
 
+type WriteItemsInput struct {
+	Vault   string           `json:"vault" jsonschema:"explicit vault name or ID"`
+	Items   []core.ItemWrite `json:"items" jsonschema:"items to write: item title, operation create or update, optional category, and field labels mapped to values"`
+	Reason  string           `json:"reason" jsonschema:"why these writes are needed"`
+	Context RequestContext   `json:"context,omitempty"`
+}
+
 type WriteItemInput struct {
 	SecretName string            `json:"secret_name" jsonschema:"item title"`
 	Vault      string            `json:"vault" jsonschema:"explicit vault name or ID"`
@@ -159,6 +166,10 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{Name: "write_item", Description: "Create or update a 1Password item after Telegram approval. Values are held only in server memory while pending and are never shown in Telegram or logs. An explicit vault is required."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
 		return handleWriteItem(ctx, pc, input)
+	})
+
+	mcp.AddTool(server, &mcp.Tool{Name: "write_items", Description: "Create or update up to 10 1Password items in one vault behind ONE Telegram approval. The approver sees item names and field labels, never values. Each item may appear once. Prefer this over several write_item calls when the values are known together."}, func(ctx context.Context, req *mcp.CallToolRequest, input WriteItemsInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+		return handleWriteItems(ctx, pc, input)
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "get_otp", Description: "Generate the current MFA/OTP/TOTP/2FA code from a previously approved 1Password OTP field. These terms are interchangeable."}, func(ctx context.Context, req *mcp.CallToolRequest, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
@@ -289,6 +300,14 @@ func handleGetOTP(_ context.Context, dc FullDaemonClient, input GetOTPInput) (*m
 
 func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
 	out, err := svc(nil, pc, Config{}).Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)
+	if err != nil {
+		return coreError(err), RequestSecretOutput{}, nil
+	}
+	return nil, *out, nil
+}
+
+func handleWriteItems(ctx context.Context, pc ProxyClient, input WriteItemsInput) (*mcp.CallToolResult, RequestSecretOutput, error) {
+	out, err := svc(nil, pc, Config{}).WriteItems(ctx, input.Vault, input.Reason, input.Items, input.Context)
 	if err != nil {
 		return coreError(err), RequestSecretOutput{}, nil
 	}

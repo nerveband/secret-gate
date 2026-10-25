@@ -360,6 +360,56 @@ func (s *Service) Write(ctx context.Context, secretName, vault, reason, operatio
 	return s.Proxy.Write(ctx, secretName, vault, reason, operation, category, fields, rc)
 }
 
+// MaxWriteItems mirrors the server's per-approval batch limit.
+const MaxWriteItems = 10
+
+// WriteItems creates or updates several items in one vault behind a single
+// Telegram approval.
+func (s *Service) WriteItems(ctx context.Context, vault, reason string, items []ItemWrite, rc RequestContext) (*RequestResult, error) {
+	wc, err := s.writeClient(vault, reason, items)
+	if err != nil {
+		return nil, err
+	}
+	return wc.WriteItems(ctx, vault, reason, items, rc)
+}
+
+// SubmitWrite submits the approval and returns at once. The server holds the
+// values while approval is pending, so the caller can drop them now.
+func (s *Service) SubmitWrite(ctx context.Context, vault, reason string, items []ItemWrite, rc RequestContext) (*PendingRequest, error) {
+	wc, err := s.writeClient(vault, reason, items)
+	if err != nil {
+		return nil, err
+	}
+	return wc.SubmitWrite(ctx, vault, reason, items, rc)
+}
+
+func (s *Service) writeClient(vault, reason string, items []ItemWrite) (WriteClient, error) {
+	if vault == "" || reason == "" {
+		return nil, E(ErrValidation, "vault and reason are required", "pass --vault <vault> --reason <why>")
+	}
+	if len(items) == 0 || len(items) > MaxWriteItems {
+		return nil, E(ErrValidation, fmt.Sprintf("a write needs 1 to %d items, got %d", MaxWriteItems, len(items)), "")
+	}
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		if item.Item == "" || len(item.Fields) == 0 {
+			return nil, E(ErrValidation, "every item needs a title and at least one field", "")
+		}
+		if item.Operation != "create" && item.Operation != "update" {
+			return nil, E(ErrValidation, fmt.Sprintf("operation must be create or update, got %q", item.Operation), "")
+		}
+		if seen[item.Item] {
+			return nil, E(ErrValidation, fmt.Sprintf("%q appears twice; merge its fields into one entry", item.Item), "")
+		}
+		seen[item.Item] = true
+	}
+	wc, ok := s.Proxy.(WriteClient)
+	if !ok {
+		return nil, E(ErrInternal, "this proxy client cannot submit batch or background writes", "")
+	}
+	return wc, nil
+}
+
 func (s *Service) DaemonStatus() (*DaemonStatusResult, error) {
 	if !s.Daemon.IsRunning() {
 		return &DaemonStatusResult{Running: false}, nil

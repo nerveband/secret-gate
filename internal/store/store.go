@@ -62,8 +62,9 @@ func (s *Store) SaveOrRenew(req *models.ApprovalRequest, ttl time.Duration) (*mo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing := s.byFingerprint[req.Fingerprint]; existing != nil {
-		if existing.Status == models.StatusPending && !existing.IsExpired() && mutationsEqual(existing.Mutation, req.Mutation) {
+		if existing.Status == models.StatusPending && !existing.IsExpired() && mutationsEqual(existing.Mutations, req.Mutations) {
 			existing.ExpiresAt = time.Now().Add(ttl)
+			existing.RemindedAt = nil
 			copy := *existing
 			return &copy, true, nil
 		}
@@ -80,11 +81,16 @@ func (s *Store) SaveOrRenew(req *models.ApprovalRequest, ttl time.Duration) (*mo
 	return &copy, false, nil
 }
 
-func mutationsEqual(left, right *models.ItemMutation) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
+func mutationsEqual(left, right []models.ItemMutation) bool {
+	if len(left) != len(right) {
+		return false
 	}
-	return left.Operation == right.Operation && left.Category == right.Category && reflect.DeepEqual(left.Fields, right.Fields)
+	for i := range left {
+		if left[i].Item != right[i].Item || left[i].Operation != right[i].Operation || left[i].Category != right[i].Category || !reflect.DeepEqual(left[i].Fields, right[i].Fields) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetByToken retrieves a request by its polling token
@@ -121,18 +127,18 @@ func (s *Store) GetByID(id string) (*models.ApprovalRequest, error) {
 	return &copy, nil
 }
 
-// Update updates an existing request
+// Update updates an existing request in place, so the token, ID, and
+// fingerprint indexes keep pointing at the same current record.
 func (s *Store) Update(req *models.ApprovalRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.requests[req.Token]; !exists {
+	existing, exists := s.requests[req.Token]
+	if !exists {
 		return ErrNotFound
 	}
 
-	copy := *req
-	s.requests[req.Token] = &copy
-	s.byID[req.ID] = &copy
+	*existing = *req
 	if req.Status != models.StatusPending {
 		s.notifyWatchersLocked(req.Token, req.Status)
 	}
@@ -166,7 +172,7 @@ func (s *Store) ClaimMutation(token string) (*models.ApprovalRequest, string, er
 	if !ok {
 		return nil, "", ErrNotFound
 	}
-	if req.Mutation == nil || req.Status != models.StatusApproved || req.IsExpired() {
+	if !req.IsWrite() || req.Status != models.StatusApproved || req.IsExpired() {
 		return nil, "", ErrNotFound
 	}
 	switch req.MutationState {
@@ -192,7 +198,28 @@ func (s *Store) ClaimMutation(token string) (*models.ApprovalRequest, string, er
 	}
 }
 
-func (s *Store) CompleteMutation(token, item string) error {
+// RecordMutationItem records that mutation index was written, so a retry
+// after a partial batch failure resumes instead of writing it twice.
+func (s *Store) RecordMutationItem(token string, index int, item string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.requests[token]
+	if !ok {
+		return ErrNotFound
+	}
+	if index < 0 || index >= len(req.Mutations) {
+		return fmt.Errorf("mutation index %d out of range", index)
+	}
+	// Copy on write: earlier copies handed out by the store share the old slice.
+	items := make([]string, len(req.Mutations))
+	copy(items, req.MutationItems)
+	items[index] = item
+	req.MutationItems = items
+	return nil
+}
+
+// CompleteMutation marks every mutation written and drops the pending values.
+func (s *Store) CompleteMutation(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req, ok := s.requests[token]
@@ -204,7 +231,7 @@ func (s *Store) CompleteMutation(token, item string) error {
 	}
 	req.MutationStartedAt = nil
 	req.MutationState = "completed"
-	req.MutationItem = item
+	req.ScrubMutationValues()
 	return nil
 }
 
@@ -220,6 +247,57 @@ func (s *Store) ReleaseMutation(token string) error {
 		req.MutationState = ""
 	}
 	return nil
+}
+
+// DueReminders returns pending writes whose expiry is within before and that
+// have not been reminded yet, marking them reminded. Requests whose whole TTL
+// is shorter than before are skipped so a reminder never arrives with the request.
+func (s *Store) DueReminders(now time.Time, before time.Duration) []*models.ApprovalRequest {
+	if before <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var due []*models.ApprovalRequest
+	for _, req := range s.requests {
+		if !req.IsWrite() || req.Status != models.StatusPending || req.RemindedAt != nil {
+			continue
+		}
+		if !now.Before(req.ExpiresAt) || req.ExpiresAt.Sub(now) > before || req.ExpiresAt.Sub(req.RequestedAt) <= before {
+			continue
+		}
+		reminded := now
+		req.RemindedAt = &reminded
+		copy := *req
+		due = append(due, &copy)
+	}
+	return due
+}
+
+// ExpireOverdue marks pending requests past their expiry as expired, drops
+// pending write values, wakes watchers, and returns each newly expired
+// request once so its Telegram message can be closed.
+func (s *Store) ExpireOverdue(now time.Time) []*models.ApprovalRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var expired []*models.ApprovalRequest
+	for token, req := range s.requests {
+		if req.ExpiryNotified || now.Before(req.ExpiresAt) {
+			continue
+		}
+		if req.Status != models.StatusPending && req.Status != models.StatusExpired {
+			continue
+		}
+		if req.Status == models.StatusPending {
+			req.Status = models.StatusExpired
+			s.notifyWatchersLocked(token, models.StatusExpired)
+		}
+		req.ScrubMutationValues()
+		req.ExpiryNotified = true
+		copy := *req
+		expired = append(expired, &copy)
+	}
+	return expired
 }
 
 // Cleanup removes expired requests and returns the number removed

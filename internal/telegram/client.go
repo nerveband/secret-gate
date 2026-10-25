@@ -15,6 +15,7 @@ import (
 
 	"github.com/johnuopini/secret-gate/internal/logger"
 	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/johnuopini/secret-gate/internal/writegrant"
 )
 
 // CallbackHandler is called when a callback query is received from polling
@@ -54,10 +55,17 @@ type InlineKeyboardMarkup struct {
 
 // SendMessageRequest represents a request to send a message
 type SendMessageRequest struct {
-	ChatID      int64                 `json:"chat_id"`
-	Text        string                `json:"text"`
-	ParseMode   string                `json:"parse_mode,omitempty"`
-	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ChatID          int64                 `json:"chat_id"`
+	Text            string                `json:"text"`
+	ParseMode       string                `json:"parse_mode,omitempty"`
+	ReplyMarkup     *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ReplyParameters *ReplyParameters      `json:"reply_parameters,omitempty"`
+}
+
+// ReplyParameters makes a message a reply, so Telegram links it to the original.
+type ReplyParameters struct {
+	MessageID                int  `json:"message_id"`
+	AllowSendingWithoutReply bool `json:"allow_sending_without_reply"`
 }
 
 // EditMessageTextRequest represents a request to edit a message
@@ -112,14 +120,11 @@ func New(token string, chatID int64) *Client {
 }
 
 // SendApprovalRequest sends an approval request message with approve/deny buttons.
-func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL string, autoApproveTTL time.Duration) (int, error) {
+// windowTTL is the length of the window the approver may open from this
+// request: the read window for reads, the write window for writes.
+func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL string, windowTTL time.Duration) (int, error) {
 	text := approvalMessage(req)
-
-	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: fmt.Sprintf("approve:%s", req.ID)}}
-	if req.Mutation == nil {
-		approveRow = append(approveRow, InlineKeyboardButton{Text: fmt.Sprintf("✅ Approve %s", formatDurationLabel(autoApproveTTL)), CallbackData: fmt.Sprintf("approve_window:%s", req.ID)})
-	}
-	keyboard := &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)}}}}
+	keyboard := approvalKeyboard(req, windowTTL)
 
 	msgReq := SendMessageRequest{
 		ChatID:      c.chatID,
@@ -196,31 +201,111 @@ func blockedWriteMessage(req *models.ApprovalRequest, detail string) string {
 }
 
 func actionDescription(req *models.ApprovalRequest) string {
-	description := actionSummary(req)
-	if firstNonEmpty(req.Action, "read") == "read" {
-		description += "\nVault: " + html.EscapeString(req.Vault)
+	if req.IsWrite() {
+		return actionSummary(req) + "\n" + writeDetails(req)
 	}
-	return description
+	return actionSummary(req) + "\nVault: " + html.EscapeString(req.Vault)
 }
 
 func actionSummary(req *models.ApprovalRequest) string {
-	action := firstNonEmpty(req.Action, "read")
+	if req.IsWrite() {
+		vault := " in the \"" + html.EscapeString(req.Vault) + "\" vault"
+		if len(req.Mutations) == 1 {
+			m := req.Mutations[0]
+			return operationVerb(m.Operation) + " \"" + html.EscapeString(m.Item) + "\"" + vault
+		}
+		return fmt.Sprintf("Write %d items", len(req.Mutations)) + vault
+	}
 	name := firstNonEmpty(req.SecretName, "item")
 	if len(req.Secrets) > 0 {
 		name = req.Secrets[0].SecretName
 	}
-	switch action {
-	case "create":
-		return "Create \"" + html.EscapeString(name) + "\" in the \"" + html.EscapeString(req.Vault) + "\" vault"
-	case "update":
-		return "Update \"" + html.EscapeString(name) + "\" in the \"" + html.EscapeString(req.Vault) + "\" vault"
-	default:
-		fields := "all fields"
-		if len(req.Secrets) > 0 && len(req.Secrets[0].Fields) > 0 {
-			fields = strings.Join(req.Secrets[0].Fields, ", ")
-		}
-		return "Read " + html.EscapeString(fields) + " from \"" + html.EscapeString(name) + "\""
+	fields := "all fields"
+	if len(req.Secrets) > 0 && len(req.Secrets[0].Fields) > 0 {
+		fields = strings.Join(req.Secrets[0].Fields, ", ")
 	}
+	return "Read " + html.EscapeString(fields) + " from \"" + html.EscapeString(name) + "\""
+}
+
+// writeDetails lists each write's item and field labels. Values are never shown.
+func writeDetails(req *models.ApprovalRequest) string {
+	if len(req.Mutations) == 1 {
+		return "Fields: " + html.EscapeString(strings.Join(req.Mutations[0].Labels(), ", "))
+	}
+	lines := make([]string, 0, len(req.Mutations))
+	for _, m := range req.Mutations {
+		lines = append(lines, "• "+operationVerb(m.Operation)+" \""+html.EscapeString(m.Item)+"\" (fields: "+html.EscapeString(strings.Join(m.Labels(), ", "))+")")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func operationVerb(operation string) string {
+	if operation == "update" {
+		return "Update"
+	}
+	return "Create"
+}
+
+func approvalKeyboard(req *models.ApprovalRequest, windowTTL time.Duration) *InlineKeyboardMarkup {
+	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: "approve:" + req.ID}}
+	if !req.IsWrite() {
+		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve " + formatDurationLabel(windowTTL), CallbackData: "approve_window:" + req.ID})
+	} else if windowTTL > 0 {
+		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve + writes " + formatDurationLabel(windowTTL), CallbackData: "approve_writes:" + req.ID})
+	}
+	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: "deny:" + req.ID}}}}
+}
+
+func revokeKeyboard(windowID string) *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "🛑 Revoke write window", CallbackData: "revoke_window:" + windowID}}}}
+}
+
+// windowScope describes who a write window covers, for the approver.
+func windowScope(scope writegrant.Scope) string {
+	who := firstNonEmpty(scope.Machine, scope.IP, "the requester")
+	if scope.AgentID != "" {
+		who += " (agent " + scope.AgentID + ")"
+	}
+	return "new items from " + who + " in \"" + scope.Vault + "\""
+}
+
+func approvedWriteWindowMessage(req *models.ApprovalRequest, approver string, window writegrant.Window) string {
+	return approvedMessage(req, approver, "This request, plus "+windowScope(window.Scope)+" until "+window.ExpiresAt.Format("15:04 MST")+
+		". Updates are covered only for items written under this approval.")
+}
+
+func autoApprovedWriteMessage(req *models.ApprovalRequest, match writegrant.Match) string {
+	scope := "Follow-up to request " + match.Source + " until " + match.ExpiresAt.Format("15:04 MST")
+	if match.Kind == models.AutoApprovedWriteWindow {
+		scope = "Write window until " + match.ExpiresAt.Format("15:04 MST") + " (opened by request " + match.Source + ")"
+	}
+	requester := firstNonEmpty(req.Context.Provider, req.Context.Runtime, req.RequesterMachine, "The requester")
+	return "✅ Auto-approved write: " + purposeSuffix(req) + "\n\n" +
+		html.EscapeString(requester) + " may " + strings.ToLower(actionSummary(req)) + " for the " +
+		html.EscapeString(firstNonEmpty(req.Context.Project, "unspecified")) + " project.\n" + writeDetails(req) +
+		reasonBlock(req) + "\n\nApproved by: @" + html.EscapeString(match.Approver) +
+		"\nScope: " + html.EscapeString(scope) + "\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func reminderMessage(req *models.ApprovalRequest) string {
+	return "⏰ Write approval expires at " + req.ExpiresAt.Format("15:04 MST") + "\n\n" + actionDescription(req) +
+		"\n\nTap Approve on the request above. After expiry the agent has to submit the values again." +
+		"\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func expiredMessage(req *models.ApprovalRequest) string {
+	outcome := "No secret was released."
+	if req.IsWrite() {
+		outcome = "Nothing was written. The agent has to submit a new request."
+	}
+	return "⌛ Expired: " + purposeSuffix(req) + "\n\n" + actionDescription(req) + reasonBlock(req) +
+		"\n\n" + outcome + "\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
+}
+
+func windowRevokedMessage(window writegrant.Window, revoker string, dropped int) string {
+	return "🛑 Write window revoked by @" + html.EscapeString(revoker) + "\n\nScope: " + html.EscapeString(windowScope(window.Scope)) +
+		fmt.Sprintf("\nFollow-up grants removed: %d", dropped) +
+		"\nOpened by request: <code>" + html.EscapeString(window.SourceRequestID) + "</code>"
 }
 
 func writeReason(b *strings.Builder, req *models.ApprovalRequest) {
@@ -348,13 +433,73 @@ func (c *Client) UpdateMessageDenied(messageID int, req *models.ApprovalRequest,
 }
 
 // UpdateApprovalRequest refreshes the original actionable request after renewal.
-func (c *Client) UpdateApprovalRequest(messageID int, req *models.ApprovalRequest, autoApproveTTL time.Duration) error {
-	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: fmt.Sprintf("approve:%s", req.ID)}}
-	if req.Mutation == nil {
-		approveRow = append(approveRow, InlineKeyboardButton{Text: fmt.Sprintf("✅ Approve %s", formatDurationLabel(autoApproveTTL)), CallbackData: fmt.Sprintf("approve_window:%s", req.ID)})
+func (c *Client) UpdateApprovalRequest(messageID int, req *models.ApprovalRequest, windowTTL time.Duration) error {
+	return c.editMessage(messageID, approvalMessage(req), approvalKeyboard(req, windowTTL))
+}
+
+// UpdateMessageApprovedWriteWindow marks a write approved with a write window
+// and keeps a revoke button on the message.
+func (c *Client) UpdateMessageApprovedWriteWindow(messageID int, req *models.ApprovalRequest, approver string, window writegrant.Window) error {
+	return c.editMessage(messageID, approvedWriteWindowMessage(req, approver, window), revokeKeyboard(window.ID))
+}
+
+// SendWriteAutoApproved posts the audit message for a write covered by a
+// write window or follow-up grant. Window-covered writes carry a revoke button.
+func (c *Client) SendWriteAutoApproved(req *models.ApprovalRequest, match writegrant.Match) error {
+	msgReq := SendMessageRequest{ChatID: c.chatID, Text: autoApprovedWriteMessage(req, match), ParseMode: "HTML"}
+	if match.WindowID != "" {
+		msgReq.ReplyMarkup = revokeKeyboard(match.WindowID)
 	}
-	keyboard := &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", req.ID)}}}}
-	return c.editMessage(messageID, approvalMessage(req), keyboard)
+	_, err := c.sendMessage(msgReq)
+	return err
+}
+
+// SendReminder replies to a pending write request shortly before it expires.
+func (c *Client) SendReminder(req *models.ApprovalRequest) error {
+	msgReq := SendMessageRequest{ChatID: c.chatID, Text: reminderMessage(req), ParseMode: "HTML"}
+	if req.TelegramMsgID != 0 {
+		msgReq.ReplyParameters = &ReplyParameters{MessageID: req.TelegramMsgID, AllowSendingWithoutReply: true}
+	}
+	_, err := c.sendMessage(msgReq)
+	return err
+}
+
+// UpdateMessageExpired replaces an expired request's buttons with an outcome line.
+func (c *Client) UpdateMessageExpired(messageID int, req *models.ApprovalRequest) error {
+	return c.editMessage(messageID, expiredMessage(req), nil)
+}
+
+// SendWindowRevoked confirms that a write window was closed.
+func (c *Client) SendWindowRevoked(window writegrant.Window, revoker string, dropped int) error {
+	return c.sendText(windowRevokedMessage(window, revoker, dropped))
+}
+
+func (c *Client) sendMessage(msgReq SendMessageRequest) (int, error) {
+	body, err := json.Marshal(msgReq)
+	if err != nil {
+		return 0, fmt.Errorf("marshaling request: %w", err)
+	}
+	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("sending message: %w", transportError(err))
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("reading response: %w", err)
+	}
+	var apiResp APIResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return 0, fmt.Errorf("parsing response: %w", err)
+	}
+	if !apiResp.OK {
+		return 0, fmt.Errorf("telegram API error: %s", apiResp.Description)
+	}
+	var msg Message
+	if err := json.Unmarshal(apiResp.Result, &msg); err != nil {
+		return 0, fmt.Errorf("parsing message: %w", err)
+	}
+	return msg.MessageID, nil
 }
 
 // SendWriteBlocked sends an audit warning without approval buttons.

@@ -3,6 +3,7 @@ package models
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"time"
 )
 
@@ -36,11 +37,29 @@ type RequestContext struct {
 
 // ItemMutation is an approved write to a 1Password item. Values remain only in
 // server memory while approval is pending and are never included in Telegram.
+// Item is the target item title; batch requests carry one mutation per item.
 type ItemMutation struct {
+	Item      string            `json:"item,omitempty"`
 	Operation string            `json:"operation"` // create or update
 	Category  string            `json:"category,omitempty"`
 	Fields    map[string]string `json:"fields"`
 }
+
+// Labels returns the mutation's field labels, sorted. Values are never included.
+func (m ItemMutation) Labels() []string {
+	labels := make([]string, 0, len(m.Fields))
+	for label := range m.Fields {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// Approval sources recorded on writes that no human tapped individually.
+const (
+	AutoApprovedWriteWindow = "write_window"
+	AutoApprovedFollowUp    = "follow_up"
+)
 
 // ApprovalRequest represents a request to access a secret
 type ApprovalRequest struct {
@@ -54,7 +73,7 @@ type ApprovalRequest struct {
 	Reason            string          `json:"reason,omitempty"`
 	Action            string          `json:"action,omitempty"`
 	Context           RequestContext  `json:"context,omitempty"`
-	Mutation          *ItemMutation   `json:"mutation,omitempty"`
+	Mutations         []ItemMutation  `json:"mutations,omitempty"`
 	Status            RequestStatus   `json:"status"`
 	RequestedAt       time.Time       `json:"requested_at"`
 	ExpiresAt         time.Time       `json:"expires_at"`
@@ -62,8 +81,37 @@ type ApprovalRequest struct {
 	TelegramMsgID     int             `json:"telegram_msg_id,omitempty"`
 	Fingerprint       string          `json:"fingerprint,omitempty"`
 	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
-	MutationItem      string          `json:"mutation_item,omitempty"`
+	MutationItems     []string        `json:"mutation_items,omitempty"` // written titles by mutation index
 	MutationStartedAt *time.Time      `json:"mutation_started_at,omitempty"`
+	AutoApproved      string          `json:"auto_approved,omitempty"`   // write_window|follow_up
+	Approver          string          `json:"approver,omitempty"`        // Telegram user whose tap covers this request
+	WriteWindowID     string          `json:"write_window_id,omitempty"` // window that approved or was opened by this request
+	RemindedAt        *time.Time      `json:"reminded_at,omitempty"`
+	ExpiryNotified    bool            `json:"expiry_notified,omitempty"`
+}
+
+// IsWrite reports whether the request creates or updates 1Password items.
+func (r *ApprovalRequest) IsWrite() bool {
+	return len(r.Mutations) > 0
+}
+
+// ScrubMutationValues drops pending write values once they can no longer be
+// written. It replaces the slice instead of editing shared maps, so copies
+// handed out by the store are never mutated.
+func (r *ApprovalRequest) ScrubMutationValues() {
+	if len(r.Mutations) == 0 {
+		return
+	}
+	scrubbed := make([]ItemMutation, len(r.Mutations))
+	for i, m := range r.Mutations {
+		fields := make(map[string]string, len(m.Fields))
+		for label := range m.Fields {
+			fields[label] = ""
+		}
+		m.Fields = fields
+		scrubbed[i] = m
+	}
+	r.Mutations = scrubbed
 }
 
 // SecretValue holds the retrieved secret data
