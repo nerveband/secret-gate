@@ -15,7 +15,7 @@ import (
 )
 
 // sectionID is the item section that holds files attached by Secret Gate.
-// The SDK creates the section when the item does not have it yet.
+// Attach saves the section with Items().Put first when the item does not have it yet.
 const sectionID = "attachments"
 
 // Attacher uploads files with a service account. The SDK client is created
@@ -81,6 +81,10 @@ func (a *Attacher) Attach(ctx context.Context, vaultID, itemID, name string, con
 	}
 	if !hasSection {
 		item.Sections = append(item.Sections, onepassword.ItemSection{ID: sectionID, Title: "Attachments"})
+		item, err = client.Items().Put(ctx, item)
+		if err != nil {
+			return fmt.Errorf("creating attachments section: %w", err)
+		}
 	}
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
