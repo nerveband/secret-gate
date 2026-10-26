@@ -23,6 +23,10 @@ type Config struct {
 	TelegramBotToken string
 	TelegramChatID   int64
 
+
+	// PushWard settings (optional second or standalone approval channel)
+	PushWardAPIKey string
+	PushWardE2EKey string
 	// Request settings
 	RequestTTL      time.Duration
 	CleanupInterval time.Duration
@@ -49,6 +53,8 @@ func Load() (*Config, error) {
 		OPConnectToken:        readSecretOrEnv("op_connect_token", "OP_CONNECT_TOKEN"),
 		OPServiceAccountToken: readSecretOrEnv("op_service_account_token", "OP_SERVICE_ACCOUNT_TOKEN"),
 		TelegramBotToken:      readSecretOrEnv("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
+		PushWardAPIKey:        firstEnv(readSecretOrEnv("pushward_api_key", "PUSHWARD_API_KEY"), readSecretOrEnv("pushward_api_token", "PUSHWARD_API_TOKEN")),
+		PushWardE2EKey:        readSecretOrEnv("pushward_e2e_key", "PUSHWARD_E2E_KEY"),
 		WebhookBaseURL:        os.Getenv("WEBHOOK_BASE_URL"),
 		RequestTTL:            getDurationDefault("REQUEST_TTL", 15*time.Minute),
 		CleanupInterval:       getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
@@ -82,11 +88,18 @@ func (c *Config) Validate() error {
 	if c.OPConnectToken == "" {
 		return errors.New("OP_CONNECT_TOKEN is required")
 	}
-	if c.TelegramBotToken == "" {
-		return errors.New("TELEGRAM_BOT_TOKEN is required")
+	hasTelegram := c.TelegramBotToken != "" || c.TelegramChatID != 0
+	hasPushWard := c.PushWardAPIKey != ""
+	if !hasTelegram && !hasPushWard {
+		return errors.New("TELEGRAM_BOT_TOKEN (with TELEGRAM_CHAT_ID) or PUSHWARD_API_KEY is required")
 	}
-	if c.TelegramChatID == 0 {
-		return errors.New("TELEGRAM_CHAT_ID is required")
+	if hasTelegram {
+		if c.TelegramBotToken == "" {
+			return errors.New("TELEGRAM_BOT_TOKEN is required")
+		}
+		if c.TelegramChatID == 0 {
+			return errors.New("TELEGRAM_CHAT_ID is required")
+		}
 	}
 	return nil
 }
@@ -97,6 +110,15 @@ func getEnvDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func firstEnv(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // getDurationDefault parses a duration from env or returns the default

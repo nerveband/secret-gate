@@ -138,6 +138,8 @@ Then run the `server` binary with the required environment variables set.
 | `WRITE_WINDOW_TTL` | No | `15m` | Length of the "Approve + writes" window; `0` hides the button |
 | `WRITE_FOLLOWUP_TTL` | No | `15m` | How long updates to an item just written by the same requester ride on that approval; `0` disables it |
 | `OP_SERVICE_ACCOUNT_TOKEN` | No | unset | 1Password service account token used only to attach files (Connect has no upload endpoint). Needs read and write access to the target vaults. Without it, writes with files are refused before approval |
+| `PUSHWARD_API_KEY` | No | unset | PushWard integration key (`hlk_...`) for approval Live Activities and audit notifications (may run alongside Telegram or standalone) |
+| `PUSHWARD_E2E_KEY` | No | unset | Optional 64-hex PushWard end-to-end encryption key (`pw1` format) used to seal audit and reminder notifications |
 
 ## Client Usage
 

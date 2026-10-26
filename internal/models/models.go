@@ -107,6 +107,7 @@ type ApprovalRequest struct {
 	ExpiresAt         time.Time       `json:"expires_at"`
 	RespondedAt       *time.Time      `json:"responded_at,omitempty"`
 	TelegramMsgID     int             `json:"telegram_msg_id,omitempty"`
+	PushWardSlug      string          `json:"pushward_slug,omitempty"`
 	Fingerprint       string          `json:"fingerprint,omitempty"`
 	MutationState     string          `json:"mutation_state,omitempty"` // executing|completed
 	MutationItems     []string        `json:"mutation_items,omitempty"` // written titles by mutation index

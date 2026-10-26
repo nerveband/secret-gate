@@ -13,6 +13,7 @@ import (
 	"github.com/johnuopini/secret-gate/internal/opconnect"
 	"github.com/johnuopini/secret-gate/internal/opsdk"
 	"github.com/johnuopini/secret-gate/internal/store"
+	"github.com/johnuopini/secret-gate/internal/pushward"
 	"github.com/johnuopini/secret-gate/internal/telegram"
 	"github.com/johnuopini/secret-gate/internal/version"
 )
@@ -34,14 +35,36 @@ func main() {
 	requestStore := store.New()
 	sessionStore := autosession.NewStore()
 	opClient := opconnect.New(cfg.OPConnectHost, cfg.OPConnectToken)
-	tgClient := telegram.New(cfg.TelegramBotToken, cfg.TelegramChatID)
+	var tgClient *telegram.Client
+	if strings.TrimSpace(cfg.TelegramBotToken) != "" && cfg.TelegramChatID != 0 {
+		tgClient = telegram.New(cfg.TelegramBotToken, cfg.TelegramChatID)
+	}
 
 	// Create HTTP handler
-	h := handlers.New(requestStore, opClient, tgClient, cfg, sessionStore)
+	var h *handlers.Handler
+	if tgClient != nil {
+		h = handlers.New(requestStore, opClient, tgClient, cfg, sessionStore)
+	} else {
+		h = handlers.New(requestStore, opClient, nil, cfg, sessionStore)
+	}
 	attachments := "disabled (no OP_SERVICE_ACCOUNT_TOKEN)"
 	if token := strings.TrimSpace(cfg.OPServiceAccountToken); token != "" {
 		h.SetFileAttacher(opsdk.New(token, version.Version))
 		attachments = "enabled"
+	}
+	pushwardStatus := "disabled"
+	if apiKey := strings.TrimSpace(cfg.PushWardAPIKey); apiKey != "" {
+		e2eKey := strings.TrimSpace(cfg.PushWardE2EKey)
+		if e2eKey != "" {
+			kid, err := pushward.KeyID(e2eKey)
+			if err != nil {
+				log.Fatal("Invalid PUSHWARD_E2E_KEY", logger.F("error", err.Error()))
+			}
+			pushwardStatus = "enabled (e2e key_id=" + kid + ")"
+		} else {
+			pushwardStatus = "enabled"
+		}
+		h.SetPushWardClient(pushward.New(apiKey, e2eKey))
 	}
 
 	// Set up routes
@@ -58,13 +81,15 @@ func main() {
 	mux.HandleFunc("/", handleRoot)
 
 	// Start Telegram polling goroutine
-	go tgClient.PollUpdates(func(callback *telegram.CallbackQuery) {
-		approver := callback.From.Username
-		if approver == "" {
-			approver = callback.From.FirstName
-		}
-		h.HandleTelegramAction(callback.ID, callback.Data, approver)
-	})
+	if tgClient != nil {
+		go tgClient.PollUpdates(func(callback *telegram.CallbackQuery) {
+			approver := callback.From.Username
+			if approver == "" {
+				approver = callback.From.FirstName
+			}
+			h.HandleTelegramAction(callback.ID, callback.Data, approver)
+		})
+	}
 
 	// Write reminders and expired-request message updates need a finer tick
 	// than cleanup: a reminder is only useful before the request expires.
@@ -99,6 +124,7 @@ func main() {
 		"write_followup_ttl", cfg.WriteFollowUpTTL.String(),
 		"write_reminder_before", cfg.WriteReminderBefore.String(),
 		"file_uploads", attachments,
+		"pushward", pushwardStatus,
 	))
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

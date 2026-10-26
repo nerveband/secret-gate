@@ -40,6 +40,19 @@ type telegramClient interface {
 	SendWriteBlocked(*models.ApprovalRequest, string) error
 }
 
+// PushWardClient sends approval Live Activities and E2E-encrypted audit notifications.
+type PushWardClient interface {
+	SendApprovalRequest(req *models.ApprovalRequest, windowTTL time.Duration) (string, error)
+	UpdateApprovalRequest(slug string, req *models.ApprovalRequest, windowTTL time.Duration) error
+	WatchApproval(req *models.ApprovalRequest, slug string, onAnswer func(data, approver string))
+	ResolveActivity(requestID, slug string) error
+	SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error
+	SendWriteAutoApproved(req *models.ApprovalRequest, match writegrant.Match) error
+	SendReminder(req *models.ApprovalRequest) error
+	SendWindowRevoked(window writegrant.Window, revoker string, dropped int) error
+	SendWriteBlocked(req *models.ApprovalRequest, detail string) error
+}
+
 // FileAttacher uploads attachments. 1Password Connect cannot upload files,
 // so the server uses the 1Password SDK with a service account for this.
 type FileAttacher interface {
@@ -52,6 +65,7 @@ type Handler struct {
 	store     *store.Store
 	opClient  *opconnect.Client
 	tgClient  telegramClient
+	pwClient  PushWardClient
 	config    *config.Config
 	sessions  *autosession.Store
 	requestMu sync.Mutex
@@ -76,6 +90,11 @@ func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Co
 // SetFileAttacher enables attaching files on writes.
 func (h *Handler) SetFileAttacher(a FileAttacher) {
 	h.files = a
+}
+
+// SetPushWardClient enables PushWard approval Live Activities and audit notifications.
+func (h *Handler) SetPushWardClient(pw PushWardClient) {
+	h.pwClient = pw
 }
 
 // SearchPayload is the JSON body for secret search
@@ -255,9 +274,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		capability := h.opClient.CheckWriteCapability(req.Vault)
 		if !capability.Allowed {
-			if notifyErr := h.tgClient.SendWriteBlocked(req, capability.Message); notifyErr != nil {
-				h.log.Error("Failed to send blocked-write audit notification", logger.F("error", notifyErr.Error()))
-			}
+			h.notifyWriteBlocked(req, capability.Message)
 			status := http.StatusServiceUnavailable
 			if capability.Code == "vault_write_unavailable" {
 				status = http.StatusForbidden
@@ -295,9 +312,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
 			return
 		}
-		if err := h.tgClient.SendAutoApprovedNotification(req, session.Approver, session.ExpiresAt); err != nil {
-			h.log.Error("Failed to send auto-approval audit notification", logger.F("error", err.Error(), "request_id", req.ID))
-		}
+		h.notifyAutoApprovedRead(req, session.Approver, session.ExpiresAt)
 		h.writeJSON(w, http.StatusAccepted, RequestResponse{
 			Token:     req.Token,
 			StatusURL: h.config.WebhookBaseURL + "/status/" + req.Token,
@@ -317,21 +332,11 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	req = stored
 	if reused {
-		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, h.windowTTL(req)); err != nil {
-			h.log.Error("Failed to refresh Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID, "telegram_message_id", req.TelegramMsgID))
-			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing Telegram approval request.")
+		if !h.refreshApprovalRequest(w, req) {
 			return
 		}
 	} else {
-		msgID, sendErr := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, h.windowTTL(req))
-		if sendErr != nil {
-			_ = h.store.Delete(req.Token)
-			h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to deliver the Telegram approval request.")
-			return
-		}
-		req.TelegramMsgID = msgID
-		if err := h.store.Update(req); err != nil {
-			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to record the Telegram approval request.")
+		if !h.deliverApprovalRequest(w, req) {
 			return
 		}
 	}
@@ -536,8 +541,8 @@ func (h *Handler) autoApproveWrite(w http.ResponseWriter, req *models.ApprovalRe
 	req.Approver = match.Approver
 	req.AutoApproved = match.Kind
 	req.WriteWindowID = match.WindowID
-	if err := h.tgClient.SendWriteAutoApproved(req, match); err != nil {
-		h.log.Error("Failed to send write auto-approval audit; asking for a tap instead", logger.F("error", err.Error(), "request_id", req.ID))
+	if !h.notifyWriteAutoApproved(req, match) {
+		h.log.Error("Failed to send write auto-approval audit; asking for a tap instead", logger.F("request_id", req.ID))
 		req.Status = models.StatusPending
 		req.RespondedAt = nil
 		req.Approver, req.AutoApproved, req.WriteWindowID = "", "", ""
@@ -1021,21 +1026,36 @@ func firstNonEmpty(values ...string) string {
 
 // HandleTelegramAction applies an inline-button tap. data is the button's
 // callback data ("action:id"); approver is the tapping Telegram user.
+func (h *Handler) answerCallback(callbackID, text string) {
+	if callbackID != "" && h.tgClient != nil {
+		_ = h.tgClient.AnswerCallbackQuery(callbackID, text)
+	}
+}
+
+// HandleTelegramAction applies an inline-button tap from Telegram or PushWard.
+// data is the button's callback data ("action:id"); approver is the tapping user.
 func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 	action, id, ok := strings.Cut(data, ":")
 	if !ok || id == "" {
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Invalid callback data")
+		h.answerCallback(callbackID, "Invalid callback data")
 		return
 	}
 	if action == "revoke_window" {
 		window, dropped, open := h.grants.Revoke(id)
 		if !open {
-			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write window already closed")
+			h.answerCallback(callbackID, "Write window already closed")
 			return
 		}
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write window revoked")
-		if err := h.tgClient.SendWindowRevoked(window, approver, dropped); err != nil {
-			h.log.Error("Failed to confirm write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
+		h.answerCallback(callbackID, "Write window revoked")
+		if h.tgClient != nil {
+			if err := h.tgClient.SendWindowRevoked(window, approver, dropped); err != nil {
+				h.log.Error("Failed to confirm write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
+			}
+		}
+		if h.pwClient != nil {
+			if err := h.pwClient.SendWindowRevoked(window, approver, dropped); err != nil {
+				h.log.Error("Failed to send PushWard write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
+			}
 		}
 		h.log.Info("Write window revoked", logger.F("window_id", window.ID, "revoked_by", approver, "follow_up_grants_removed", dropped))
 		return
@@ -1043,49 +1063,56 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 
 	req, err := h.store.GetByID(id)
 	if err == store.ErrNotFound {
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request not found or expired")
+		h.answerCallback(callbackID, "Request not found or expired")
 		return
 	}
 	if err != nil {
 		h.log.Error("Error fetching request", logger.F("error", err.Error(), "request_id", id))
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Internal error")
+		h.answerCallback(callbackID, "Internal error")
 		return
 	}
 	if req.Status == models.StatusExpired || (req.Status == models.StatusPending && req.IsExpired()) {
 		// Approving now would show "Approved" for a request the agent can no
 		// longer complete. Close it instead.
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request expired. Ask the agent to resubmit.")
+		h.answerCallback(callbackID, "Request expired. Ask the agent to resubmit.")
 		h.closeExpired(time.Now())
 		return
 	}
 	if req.Status != models.StatusPending {
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Request already processed")
+		h.answerCallback(callbackID, "Request already processed")
 		return
 	}
 
+	fromTelegram := callbackID != ""
 	switch action {
 	case "approve":
 		req.Approve()
 		req.Approver = approver
 		h.updateRequest(req)
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved!")
-		if req.TelegramMsgID != 0 {
+		h.answerCallback(callbackID, "Approved!")
+		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
+		}
+		if fromTelegram {
+			h.resolvePushWard(req)
 		}
 		h.log.Info("Request approved", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
 
 	case "approve_window":
 		if req.IsWrite() {
-			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Read windows do not cover writes")
+			h.answerCallback(callbackID, "Read windows do not cover writes")
 			return
 		}
 		req.Approve()
 		req.Approver = approver
 		session := h.sessions.Create(approver, h.config.AutoApproveTTL)
 		h.updateRequest(req)
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved with window")
-		if req.TelegramMsgID != 0 {
+		h.answerCallback(callbackID, "Approved with window")
+		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
+		}
+		if fromTelegram {
+			h.resolvePushWard(req)
 		}
 		h.log.Info("Request approved with auto-approval window", logger.F(
 			"request_id", req.ID,
@@ -1096,7 +1123,7 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 
 	case "approve_writes":
 		if !req.IsWrite() || h.config.WriteWindowTTL <= 0 {
-			_ = h.tgClient.AnswerCallbackQuery(callbackID, "Write windows are not available for this request")
+			h.answerCallback(callbackID, "Write windows are not available for this request")
 			return
 		}
 		window := h.grants.OpenWindow(approver, req.ID, writegrant.ScopeOf(req), h.config.WriteWindowTTL)
@@ -1104,9 +1131,12 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		req.Approver = approver
 		req.WriteWindowID = window.ID
 		h.updateRequest(req)
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Approved with write window")
-		if req.TelegramMsgID != 0 {
+		h.answerCallback(callbackID, "Approved with write window")
+		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApprovedWriteWindow(req.TelegramMsgID, req, approver, window)
+		}
+		if fromTelegram {
+			h.resolvePushWard(req)
 		}
 		h.log.Info("Write approved with write window", logger.F(
 			"request_id", req.ID,
@@ -1123,15 +1153,137 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		req.Deny()
 		req.ScrubMutationValues()
 		h.updateRequest(req)
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Denied")
-		if req.TelegramMsgID != 0 {
+		h.answerCallback(callbackID, "Denied")
+		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageDenied(req.TelegramMsgID, req, approver)
+		}
+		if fromTelegram {
+			h.resolvePushWard(req)
 		}
 		h.log.Info("Request denied", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
 
 	default:
-		_ = h.tgClient.AnswerCallbackQuery(callbackID, "Unknown action")
+		h.answerCallback(callbackID, "Unknown action")
 	}
+}
+
+func (h *Handler) resolvePushWard(req *models.ApprovalRequest) {
+	if h.pwClient == nil || req.PushWardSlug == "" {
+		return
+	}
+	if err := h.pwClient.ResolveActivity(req.ID, req.PushWardSlug); err != nil {
+		h.log.Error("Failed to resolve PushWard approval activity", logger.F("error", err.Error(), "request_id", req.ID, "slug", req.PushWardSlug))
+	}
+}
+
+func (h *Handler) notifyWriteBlocked(req *models.ApprovalRequest, message string) {
+	if h.tgClient != nil {
+		if err := h.tgClient.SendWriteBlocked(req, message); err != nil {
+			h.log.Error("Failed to send blocked-write audit notification", logger.F("error", err.Error()))
+		}
+	}
+	if h.pwClient != nil {
+		if err := h.pwClient.SendWriteBlocked(req, message); err != nil {
+			h.log.Error("Failed to send PushWard blocked-write audit notification", logger.F("error", err.Error()))
+		}
+	}
+}
+
+func (h *Handler) notifyAutoApprovedRead(req *models.ApprovalRequest, approver string, expiresAt time.Time) {
+	if h.tgClient != nil {
+		if err := h.tgClient.SendAutoApprovedNotification(req, approver, expiresAt); err != nil {
+			h.log.Error("Failed to send auto-approval audit notification", logger.F("error", err.Error(), "request_id", req.ID))
+		}
+	}
+	if h.pwClient != nil {
+		if err := h.pwClient.SendAutoApprovedNotification(req, approver, expiresAt); err != nil {
+			h.log.Error("Failed to send PushWard auto-approval audit notification", logger.F("error", err.Error(), "request_id", req.ID))
+		}
+	}
+}
+
+func (h *Handler) notifyWriteAutoApproved(req *models.ApprovalRequest, match writegrant.Match) bool {
+	sent := false
+	if h.tgClient != nil {
+		if err := h.tgClient.SendWriteAutoApproved(req, match); err != nil {
+			h.log.Error("Failed to send Telegram write auto-approval audit", logger.F("error", err.Error(), "request_id", req.ID))
+		} else {
+			sent = true
+		}
+	}
+	if h.pwClient != nil {
+		if err := h.pwClient.SendWriteAutoApproved(req, match); err != nil {
+			h.log.Error("Failed to send PushWard write auto-approval audit", logger.F("error", err.Error(), "request_id", req.ID))
+		} else {
+			sent = true
+		}
+	}
+	return sent
+}
+
+func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.ApprovalRequest) bool {
+	ttl := h.windowTTL(req)
+	delivered := false
+	if h.tgClient != nil {
+		msgID, err := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, ttl)
+		if err != nil {
+			h.log.Error("Failed to send Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID))
+		} else {
+			req.TelegramMsgID = msgID
+			delivered = true
+		}
+	}
+	if h.pwClient != nil {
+		slug, err := h.pwClient.SendApprovalRequest(req, ttl)
+		if err != nil {
+			h.log.Error("Failed to send PushWard approval request", logger.F("error", err.Error(), "request_id", req.ID))
+		} else {
+			req.PushWardSlug = slug
+			delivered = true
+			reqCopy := *req
+			h.pwClient.WatchApproval(&reqCopy, slug, func(data, approver string) {
+				h.HandleTelegramAction("", data, approver)
+			})
+		}
+	}
+	if !delivered {
+		_ = h.store.Delete(req.Token)
+		h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to deliver the approval request.")
+		return false
+	}
+	if err := h.store.Update(req); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to record the approval request.")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) refreshApprovalRequest(w http.ResponseWriter, req *models.ApprovalRequest) bool {
+	ttl := h.windowTTL(req)
+	refreshed := false
+	if h.tgClient != nil && req.TelegramMsgID != 0 {
+		if err := h.tgClient.UpdateApprovalRequest(req.TelegramMsgID, req, ttl); err != nil {
+			h.log.Error("Failed to refresh Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID, "telegram_message_id", req.TelegramMsgID))
+		} else {
+			refreshed = true
+		}
+	}
+	if h.pwClient != nil {
+		if err := h.pwClient.UpdateApprovalRequest(req.PushWardSlug, req, ttl); err != nil {
+			h.log.Error("Failed to refresh PushWard approval request", logger.F("error", err.Error(), "request_id", req.ID, "slug", req.PushWardSlug))
+		} else {
+			refreshed = true
+			reqCopy := *req
+			h.pwClient.WatchApproval(&reqCopy, req.PushWardSlug, func(data, approver string) {
+				h.HandleTelegramAction("", data, approver)
+			})
+		}
+	}
+	if !refreshed {
+		h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing approval request.")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) updateRequest(req *models.ApprovalRequest) {
@@ -1144,11 +1296,24 @@ func (h *Handler) updateRequest(req *models.ApprovalRequest) {
 // Telegram messages of expired requests, and drops expired write grants.
 func (h *Handler) SweepPending(now time.Time) {
 	for _, req := range h.store.DueReminders(now, h.config.WriteReminderBefore) {
-		if err := h.tgClient.SendReminder(req); err != nil {
-			h.log.Error("Failed to send write approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
-			continue
+		sent := false
+		if h.tgClient != nil {
+			if err := h.tgClient.SendReminder(req); err != nil {
+				h.log.Error("Failed to send write approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
+			} else {
+				sent = true
+			}
 		}
-		h.log.Info("Sent write approval reminder", logger.F("request_id", req.ID, "expires_at", req.ExpiresAt.Format(time.RFC3339)))
+		if h.pwClient != nil {
+			if err := h.pwClient.SendReminder(req); err != nil {
+				h.log.Error("Failed to send PushWard write approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
+			} else {
+				sent = true
+			}
+		}
+		if sent {
+			h.log.Info("Sent write approval reminder", logger.F("request_id", req.ID, "expires_at", req.ExpiresAt.Format(time.RFC3339)))
+		}
 	}
 	h.closeExpired(now)
 	h.grants.Cleanup()
@@ -1157,12 +1322,12 @@ func (h *Handler) SweepPending(now time.Time) {
 func (h *Handler) closeExpired(now time.Time) {
 	for _, req := range h.store.ExpireOverdue(now) {
 		h.log.Info("Request expired", logger.F("request_id", req.ID, "action", req.Action, "items", len(req.Secrets), "machine", req.RequesterMachine))
-		if req.TelegramMsgID == 0 {
-			continue
+		if h.tgClient != nil && req.TelegramMsgID != 0 {
+			if err := h.tgClient.UpdateMessageExpired(req.TelegramMsgID, req); err != nil {
+				h.log.Error("Failed to close expired Telegram request", logger.F("error", err.Error(), "request_id", req.ID))
+			}
 		}
-		if err := h.tgClient.UpdateMessageExpired(req.TelegramMsgID, req); err != nil {
-			h.log.Error("Failed to close expired Telegram request", logger.F("error", err.Error(), "request_id", req.ID))
-		}
+		h.resolvePushWard(req)
 	}
 }
 

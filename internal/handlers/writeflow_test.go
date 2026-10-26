@@ -467,3 +467,62 @@ func TestSweepRemindsOnceThenClosesExpiredWrite(t *testing.T) {
 		t.Fatalf("expired request status=%s value kept=%v", expired.Status, expired.Mutations[0].Fields["k"] != "")
 	}
 }
+
+type fakePushWard struct {
+	sent     []string
+	resolved []string
+	onAnswer func(data, approver string)
+}
+
+func (f *fakePushWard) SendApprovalRequest(req *models.ApprovalRequest, _ time.Duration) (string, error) {
+	slug := "sg-" + req.ID
+	f.sent = append(f.sent, slug)
+	return slug, nil
+}
+func (f *fakePushWard) UpdateApprovalRequest(string, *models.ApprovalRequest, time.Duration) error {
+	return nil
+}
+func (f *fakePushWard) WatchApproval(_ *models.ApprovalRequest, _ string, onAnswer func(data, approver string)) {
+	f.onAnswer = onAnswer
+}
+func (f *fakePushWard) ResolveActivity(_ string, slug string) error {
+	f.resolved = append(f.resolved, slug)
+	return nil
+}
+func (f *fakePushWard) SendAutoApprovedNotification(*models.ApprovalRequest, string, time.Time) error {
+	return nil
+}
+func (f *fakePushWard) SendWriteAutoApproved(*models.ApprovalRequest, writegrant.Match) error {
+	return nil
+}
+func (f *fakePushWard) SendReminder(*models.ApprovalRequest) error { return nil }
+func (f *fakePushWard) SendWindowRevoked(writegrant.Window, string, int) error {
+	return nil
+}
+func (f *fakePushWard) SendWriteBlocked(*models.ApprovalRequest, string) error { return nil }
+
+func TestPushWardAnswerUpdatesTelegramAndTelegramTapResolvesPushWard(t *testing.T) {
+	wh := newWriteHarness(t)
+	pw := &fakePushWard{}
+	wh.h.SetPushWardClient(pw)
+
+	code, r1, _ := wh.submit(writeBody("m", "a", "Item1", "create", `{"k":"v1"}`), agentAddr)
+	if code != http.StatusAccepted || len(pw.sent) != 1 || pw.onAnswer == nil {
+		t.Fatalf("r1 code=%d pw.sent=%v", code, pw.sent)
+	}
+	req1, _ := wh.store.GetByToken(r1.Token)
+	pw.onAnswer("approve:"+req1.ID, "pushward")
+	if wh.status(r1.Token) != models.StatusApproved {
+		t.Fatalf("r1 status=%s, want approved", wh.status(r1.Token))
+	}
+	if len(pw.resolved) != 0 {
+		t.Fatalf("PushWard-originated tap should not re-delete activity: %v", pw.resolved)
+	}
+
+	_, r2, _ := wh.submit(writeBody("m", "a", "Item2", "create", `{"k":"v2"}`), agentAddr)
+	wh.tap("approve", r2.Token)
+	req2, _ := wh.store.GetByToken(r2.Token)
+	if len(pw.resolved) != 1 || pw.resolved[0] != "sg-"+req2.ID {
+		t.Fatalf("Telegram tap did not resolve PushWard activity: %v", pw.resolved)
+	}
+}
