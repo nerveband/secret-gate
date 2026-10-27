@@ -27,6 +27,10 @@ type Config struct {
 	// PushWard settings (optional second or standalone approval channel)
 	PushWardAPIKey string
 	PushWardE2EKey string
+
+	// ApproverToken enables the authenticated Approver API (/approvals/*) for
+	// external apps (such as Voice Workspace) to stream and decide approvals.
+	ApproverToken string
 	// Request settings
 	RequestTTL      time.Duration
 	CleanupInterval time.Duration
@@ -55,6 +59,7 @@ func Load() (*Config, error) {
 		TelegramBotToken:      readSecretOrEnv("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
 		PushWardAPIKey:        firstEnv(readSecretOrEnv("pushward_api_key", "PUSHWARD_API_KEY"), readSecretOrEnv("pushward_api_token", "PUSHWARD_API_TOKEN")),
 		PushWardE2EKey:        readSecretOrEnv("pushward_e2e_key", "PUSHWARD_E2E_KEY"),
+		ApproverToken:         firstEnv(readSecretOrEnv("secret_gate_approver_token", "SECRET_GATE_APPROVER_TOKEN"), readSecretOrEnv("approver_token", "APPROVER_TOKEN")),
 		WebhookBaseURL:        os.Getenv("WEBHOOK_BASE_URL"),
 		RequestTTL:            getDurationDefault("REQUEST_TTL", 15*time.Minute),
 		CleanupInterval:       getDurationDefault("CLEANUP_INTERVAL", 5*time.Minute),
@@ -90,8 +95,9 @@ func (c *Config) Validate() error {
 	}
 	hasTelegram := c.TelegramBotToken != "" || c.TelegramChatID != 0
 	hasPushWard := c.PushWardAPIKey != ""
-	if !hasTelegram && !hasPushWard {
-		return errors.New("TELEGRAM_BOT_TOKEN (with TELEGRAM_CHAT_ID) or PUSHWARD_API_KEY is required")
+	hasApprover := c.ApproverToken != ""
+	if !hasTelegram && !hasPushWard && !hasApprover {
+		return errors.New("TELEGRAM_BOT_TOKEN (with TELEGRAM_CHAT_ID), PUSHWARD_API_KEY, or SECRET_GATE_APPROVER_TOKEN is required")
 	}
 	if hasTelegram {
 		if c.TelegramBotToken == "" {

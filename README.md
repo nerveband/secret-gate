@@ -140,6 +140,7 @@ Then run the `server` binary with the required environment variables set.
 | `OP_SERVICE_ACCOUNT_TOKEN` | No | unset | 1Password service account token used only to attach files (Connect has no upload endpoint). Needs read and write access to the target vaults. Without it, writes with files are refused before approval |
 | `PUSHWARD_API_KEY` | No | unset | PushWard integration key (`hlk_...`) for approval Live Activities and audit notifications (may run alongside Telegram or standalone) |
 | `PUSHWARD_E2E_KEY` | No | unset | Optional 64-hex PushWard end-to-end encryption key (`pw1` format) used to seal audit and reminder notifications |
+| `SECRET_GATE_APPROVER_TOKEN` | No | unset | Bearer token enabling the authenticated Approver API (`/approvals/*`) for first-party apps and gateways (such as Voice Workspace) to stream and decide approvals inline. See [docs/approver-api.md](docs/approver-api.md) |
 
 ## Client Usage
 
@@ -445,6 +446,10 @@ secret-gate daemon stop      # Stop the daemon
 | `POST` | `/request` | None | Request access to one or more secrets (triggers Telegram approval) |
 | `GET` | `/status/{token}` | Token | Check approval status of a pending request |
 | `GET` | `/secret/{token}` | Token | Retrieve the approved secret (one-time use) |
+| `GET` | `/approvals` | Bearer `SECRET_GATE_APPROVER_TOKEN` | List pending approval requests (metadata only, never secret values) |
+| `GET` | `/approvals/events` | Bearer `SECRET_GATE_APPROVER_TOKEN` | Real-time SSE stream of approval lifecycle events (`snapshot`, `approval.created`, `approval.approved`, `approval.denied`, `approval.expired`, `window.revoked`) |
+| `POST` | `/approvals/{id}/decide` | Bearer `SECRET_GATE_APPROVER_TOKEN` | Approve (`approve`, `approve_window`, `approve_writes`) or `deny` a pending request from an external app |
+| `POST` | `/approvals/windows/{id}/revoke` | Bearer `SECRET_GATE_APPROVER_TOKEN` | Revoke an active write auto-approval window |
 | `GET` | `/client/{os}/{arch}` | None | Download the pre-compiled client binary (linux/darwin, amd64/arm64) |
 | `GET` | `/health` | None | Health check |
 | `GET` | `/openapi.json` | None | Full OpenAPI 3.0 specification |

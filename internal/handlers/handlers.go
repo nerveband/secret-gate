@@ -72,6 +72,7 @@ type Handler struct {
 	log       *logger.Logger
 	grants    *writegrant.Store
 	files     FileAttacher // nil when no service account is configured
+	approvals *approvalHub
 }
 
 // New creates a new Handler
@@ -84,6 +85,7 @@ func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Co
 		sessions: sessions,
 		log:      logger.New(),
 		grants:   writegrant.NewStore(),
+		approvals: newApprovalHub(),
 	}
 }
 
@@ -1057,6 +1059,13 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 				h.log.Error("Failed to send PushWard write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
 			}
 		}
+		if h.approvals != nil {
+			h.approvals.broadcast(ApprovalEvent{
+				Type:     "window.revoked",
+				WindowID: window.ID,
+				Approver: approver,
+			})
+		}
 		h.log.Info("Write window revoked", logger.F("window_id", window.ID, "revoked_by", approver, "follow_up_grants_removed", dropped))
 		return
 	}
@@ -1083,7 +1092,7 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		return
 	}
 
-	fromTelegram := callbackID != ""
+	fromPushWard := callbackID == "" && approver == "pushward"
 	switch action {
 	case "approve":
 		req.Approve()
@@ -1093,9 +1102,10 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
 		}
-		if fromTelegram {
+		if !fromPushWard {
 			h.resolvePushWard(req)
 		}
+		h.emitApprovalEvent("approval.approved", req)
 		h.log.Info("Request approved", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
 
 	case "approve_window":
@@ -1111,9 +1121,10 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApproved(req.TelegramMsgID, req, approver)
 		}
-		if fromTelegram {
+		if !fromPushWard {
 			h.resolvePushWard(req)
 		}
+		h.emitApprovalEvent("approval.approved", req)
 		h.log.Info("Request approved with auto-approval window", logger.F(
 			"request_id", req.ID,
 			"session_id", session.ID,
@@ -1135,9 +1146,10 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageApprovedWriteWindow(req.TelegramMsgID, req, approver, window)
 		}
-		if fromTelegram {
+		if !fromPushWard {
 			h.resolvePushWard(req)
 		}
+		h.emitApprovalEvent("approval.approved", req)
 		h.log.Info("Write approved with write window", logger.F(
 			"request_id", req.ID,
 			"window_id", window.ID,
@@ -1157,9 +1169,10 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		if h.tgClient != nil && req.TelegramMsgID != 0 {
 			_ = h.tgClient.UpdateMessageDenied(req.TelegramMsgID, req, approver)
 		}
-		if fromTelegram {
+		if !fromPushWard {
 			h.resolvePushWard(req)
 		}
+		h.emitApprovalEvent("approval.denied", req)
 		h.log.Info("Request denied", logger.F("request_id", req.ID, "approver", approver, "action", req.Action))
 
 	default:
@@ -1218,6 +1231,9 @@ func (h *Handler) notifyWriteAutoApproved(req *models.ApprovalRequest, match wri
 			sent = true
 		}
 	}
+	if h.hasApproverAPI() {
+		sent = true
+	}
 	return sent
 }
 
@@ -1246,6 +1262,9 @@ func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.Appr
 			})
 		}
 	}
+	if h.hasApproverAPI() {
+		delivered = true
+	}
 	if !delivered {
 		_ = h.store.Delete(req.Token)
 		h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to deliver the approval request.")
@@ -1255,6 +1274,7 @@ func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.Appr
 		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to record the approval request.")
 		return false
 	}
+	h.emitApprovalEvent("approval.created", req)
 	return true
 }
 
@@ -1278,6 +1298,12 @@ func (h *Handler) refreshApprovalRequest(w http.ResponseWriter, req *models.Appr
 				h.HandleTelegramAction("", data, approver)
 			})
 		}
+	}
+	if h.hasApproverAPI() {
+		refreshed = true
+	}
+	if refreshed {
+		h.emitApprovalEvent("approval.updated", req)
 	}
 	if !refreshed {
 		h.writeError(w, http.StatusBadGateway, "telegram_delivery_failed", "Failed to refresh the existing approval request.")
@@ -1328,6 +1354,7 @@ func (h *Handler) closeExpired(now time.Time) {
 			}
 		}
 		h.resolvePushWard(req)
+		h.emitApprovalEvent("approval.expired", req)
 	}
 }
 

@@ -66,6 +66,10 @@ func main() {
 		}
 		h.SetPushWardClient(pushward.New(apiKey, e2eKey))
 	}
+	approverAPI := "disabled"
+	if strings.TrimSpace(cfg.ApproverToken) != "" {
+		approverAPI = "enabled"
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -76,6 +80,8 @@ func main() {
 	mux.HandleFunc("/fields", h.HandleFields)
 	mux.HandleFunc("/status/", h.HandleStatus)
 	mux.HandleFunc("/secret/", h.HandleSecret)
+	mux.HandleFunc("/approvals", h.HandleApprovals)
+	mux.HandleFunc("/approvals/", h.HandleApprovals)
 	mux.HandleFunc("/client/", h.HandleClientDownload)
 	mux.HandleFunc("/openapi.json", h.HandleOpenAPI)
 	mux.HandleFunc("/", handleRoot)
@@ -125,6 +131,7 @@ func main() {
 		"write_reminder_before", cfg.WriteReminderBefore.String(),
 		"file_uploads", attachments,
 		"pushward", pushwardStatus,
+		"approver_api", approverAPI,
 	))
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
