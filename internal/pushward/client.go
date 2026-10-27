@@ -490,75 +490,135 @@ func sealPlaintextWithNonce(keyHex string, nonce, plaintext []byte) (string, err
 func approvalOptions(req *models.ApprovalRequest, windowTTL time.Duration) []activityOption {
 	if !req.IsWrite() {
 		return []activityOption{
-			{ID: "approve", Title: "Approve once", Style: "primary", Icon: "checkmark.circle.fill"},
+			{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"},
 			{ID: "approve_window", Title: truncateRunes("Approve "+formatDuration(windowTTL), 24), Style: "secondary", Icon: "clock.fill"},
 			{ID: "deny", Title: "Deny", Style: "destructive", Icon: "xmark.circle.fill"},
 		}
 	}
 	if windowTTL > 0 {
 		return []activityOption{
-			{ID: "approve", Title: "Approve once", Style: "primary", Icon: "checkmark.circle.fill"},
+			{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"},
 			{ID: "approve_writes", Title: truncateRunes("Approve + "+formatDuration(windowTTL), 24), Style: "secondary", Icon: "clock.badge.checkmark"},
 			{ID: "deny", Title: "Deny", Style: "destructive", Icon: "xmark.circle.fill"},
 		}
 	}
 	return []activityOption{
-		{ID: "approve", Title: "Approve once", Style: "primary"},
+		{ID: "approve", Title: "Approve", Style: "primary"},
 		{ID: "deny", Title: "Deny", Style: "destructive"},
 	}
 }
 
 func approvalDetails(req *models.ApprovalRequest) []activityDetail {
 	var details []activityDetail
-	scope := req.Vault
-	if req.IsWrite() {
-		if len(req.Mutations) == 1 {
-			m := req.Mutations[0]
-			var parts []string
-			if len(m.Fields) > 0 {
-				parts = append(parts, strings.Join(m.Labels(), ", "))
-			}
-			for _, f := range m.Files {
-				parts = append(parts, fmt.Sprintf("📎 %s (%s)", f.Name, humanSize(f.Size)))
-			}
-			if len(parts) > 0 {
-				scope = req.Vault + " · " + strings.Join(parts, ", ")
-			}
-		}
-	} else if len(req.Secrets) > 0 {
-		s := req.Secrets[0]
-		var parts []string
-		if len(s.Fields) > 0 {
-			parts = append(parts, strings.Join(s.Fields, ", "))
-		}
-		for _, a := range s.Attachments {
-			parts = append(parts, fmt.Sprintf("📎 %s (%s)", a.Name, humanSize(a.Size)))
-		}
-		if len(parts) > 0 {
-			scope = req.Vault + " · " + strings.Join(parts, ", ")
-		}
-	}
-	details = append(details, activityDetail{
-		Label: "Vault",
-		Value: truncateRunes(scope, 64),
-	})
-	reason := firstNonEmpty(req.Reason, req.Context.Task, req.RequesterMachine)
-	if reason != "" {
+	vault := firstNonEmpty(req.Vault, "default")
+	fieldsSummary := compactFieldsSummary(req)
+	if fieldsSummary == "" {
 		details = append(details, activityDetail{
-			Label: "Why",
-			Value: truncateRunes(reason, 64),
+			Label: "Vault",
+			Value: truncateRunes(vault, 64),
 		})
+		return details
 	}
+	combined := vault + " · " + fieldsSummary
+	if len([]rune(combined)) <= 40 {
+		details = append(details, activityDetail{
+			Label: "Vault",
+			Value: combined,
+		})
+		return details
+	}
+	details = append(details,
+		activityDetail{Label: "Vault", Value: truncateRunes(vault, 64)},
+		activityDetail{Label: "Fields", Value: truncateRunes(fieldsSummary, 64)},
+	)
 	return details
 }
 
+func compactFieldsSummary(req *models.ApprovalRequest) string {
+	var labels []string
+	var files []string
+	if req.IsWrite() {
+		if len(req.Mutations) == 1 {
+			m := req.Mutations[0]
+			for _, l := range m.Labels() {
+				labels = append(labels, shortFieldLabel(l))
+			}
+			for _, f := range m.Files {
+				files = append(files, "📎 "+f.Name)
+			}
+		} else {
+			names := make([]string, 0, len(req.Mutations))
+			for _, m := range req.Mutations {
+				names = append(names, m.Item)
+			}
+			return compactList(names, 2)
+		}
+	} else if len(req.Secrets) > 0 {
+		s := req.Secrets[0]
+		for _, f := range s.Fields {
+			if !strings.HasPrefix(f, models.AttachmentPrefix) {
+				labels = append(labels, shortFieldLabel(f))
+			}
+		}
+		for _, a := range s.Attachments {
+			files = append(files, "📎 "+a.Name)
+		}
+	}
+	var parts []string
+	if len(labels) > 0 {
+		parts = append(parts, compactList(labels, 3))
+	}
+	if len(files) > 0 {
+		parts = append(parts, compactList(files, 2))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func shortFieldLabel(label string) string {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "one-time password", "onetimepassword":
+		return "otp"
+	case "notesplain", "secure note":
+		return "notes"
+	case "passkey credential id":
+		return "passkey id"
+	case "passkey private key":
+		return "passkey key"
+	case "passkey user handle":
+		return "user handle"
+	case "passkey sign count":
+		return "sign count"
+	}
+	return label
+}
+
+func compactList(items []string, maxShow int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) <= maxShow {
+		return strings.Join(items, ", ")
+	}
+	return fmt.Sprintf("%s +%d", strings.Join(items[:maxShow-1], ", "), len(items)-(maxShow-1))
+}
+
 func cardTitle(req *models.ApprovalRequest) string {
-	return plainActionSummary(req) + "?"
+	if req.IsWrite() {
+		if len(req.Mutations) == 1 {
+			m := req.Mutations[0]
+			verb := "Create"
+			if m.Operation == "update" {
+				verb = "Update"
+			}
+			return verb + " " + m.Item
+		}
+		return fmt.Sprintf("Write %d items", len(req.Mutations))
+	}
+	return "Read " + itemTitle(req)
 }
 
 func questionState(req *models.ApprovalRequest) string {
-	reason := firstNonEmpty(req.Reason, req.Context.Task, "Approval requested")
-	return plainActionSummary(req) + ": " + reason
+	return firstNonEmpty(req.Reason, req.Context.Task, plainActionSummary(req))
 }
 
 func sourceLabel(req *models.ApprovalRequest) string {
@@ -606,15 +666,6 @@ func formatDuration(d time.Duration) string {
 	return d.String()
 }
 
-func humanSize(n int64) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
-	}
-	return fmt.Sprintf("%d B", n)
-}
 
 func truncateRunes(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")

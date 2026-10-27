@@ -133,10 +133,13 @@ func TestSendApprovalAndWatchAnswer(t *testing.T) {
 	if slug != "sg-req1" || created.Slug != "sg-req1" {
 		t.Fatalf("slug = %q, created = %#v", slug, created)
 	}
-	if patched.Content.Template != "approval" || len(patched.Content.Options) != 3 {
+	if patched.Content.Template != "approval" || len(patched.Content.Options) != 3 || patched.Content.Options[0].Title != "Approve" {
 		t.Fatalf("patched content = %#v", patched.Content)
 	}
-	if len(patched.Content.Details) == 0 || !strings.Contains(patched.Content.Details[0].Value, "cert.pem (512 B)") {
+	if created.Name != "Read Deploy Key" || patched.Content.State != "deploy service" {
+		t.Fatalf("name = %q, state = %q", created.Name, patched.Content.State)
+	}
+	if len(patched.Content.Details) != 1 || !strings.Contains(patched.Content.Details[0].Value, "📎 cert.pem") {
 		t.Fatalf("details = %#v", patched.Content.Details)
 	}
 
