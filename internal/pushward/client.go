@@ -488,6 +488,14 @@ func sealPlaintextWithNonce(keyHex string, nonce, plaintext []byte) (string, err
 }
 
 func approvalOptions(req *models.ApprovalRequest, windowTTL time.Duration) []activityOption {
+	deny := activityOption{ID: "deny", Title: "Deny", Style: "destructive", Icon: "xmark.circle.fill"}
+	if req.AwaitingOwner() {
+		// Values are typed on the entry page linked from Telegram.
+		return []activityOption{deny}
+	}
+	if req.Sensitive {
+		return []activityOption{{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"}, deny}
+	}
 	if !req.IsWrite() {
 		return []activityOption{
 			{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"},
@@ -510,6 +518,9 @@ func approvalOptions(req *models.ApprovalRequest, windowTTL time.Duration) []act
 
 func approvalDetails(req *models.ApprovalRequest) []activityDetail {
 	var details []activityDetail
+	if req.AwaitingOwner() {
+		details = append(details, activityDetail{Label: "Values", Value: "Enter them from the Telegram link"})
+	}
 	vault := firstNonEmpty(req.Vault, "default")
 	fieldsSummary := compactFieldsSummary(req)
 	if fieldsSummary == "" {
@@ -618,7 +629,27 @@ func cardTitle(req *models.ApprovalRequest) string {
 }
 
 func questionState(req *models.ApprovalRequest) string {
+	if card := cardLine(req); card != "" {
+		return card
+	}
 	return firstNonEmpty(req.Reason, req.Context.Task, plainActionSummary(req))
+}
+
+// cardLine is "aa.com checkout, Mastercard ending 1100, expires 08/2027".
+func cardLine(req *models.ApprovalRequest) string {
+	if req.IsWrite() {
+		return ""
+	}
+	for _, s := range req.Secrets {
+		if s.Summary == "" {
+			continue
+		}
+		if req.Context.Purpose == "" {
+			return s.Summary
+		}
+		return req.Context.Purpose + ", " + s.Summary
+	}
+	return ""
 }
 
 func sourceLabel(req *models.ApprovalRequest) string {

@@ -80,6 +80,7 @@ func main() {
 	mux.HandleFunc("/fields", h.HandleFields)
 	mux.HandleFunc("/status/", h.HandleStatus)
 	mux.HandleFunc("/secret/", h.HandleSecret)
+	mux.HandleFunc("/entry/", h.HandleEntry)
 	mux.HandleFunc("/approvals", h.HandleApprovals)
 	mux.HandleFunc("/approvals/", h.HandleApprovals)
 	mux.HandleFunc("/client/", h.HandleClientDownload)

@@ -30,6 +30,10 @@ type ApprovalItemView struct {
 	Category  string              `json:"category,omitempty"`
 	Fields    []string            `json:"fields,omitempty"`
 	Files     []models.Attachment `json:"files,omitempty"`
+	// Card is the masked card ("Mastercard ending 1100, expires 08/2027").
+	Card string `json:"card,omitempty"`
+	// OwnerFields are labels the approver types on EntryURL.
+	OwnerFields []string `json:"owner_fields,omitempty"`
 }
 
 // ApprovalView is the metadata-only wire representation of an approval request
@@ -53,6 +57,11 @@ type ApprovalView struct {
 	Approver         string                `json:"approver,omitempty"`
 	AutoApproved     string                `json:"auto_approved,omitempty"`
 	WriteWindowID    string                `json:"write_window_id,omitempty"`
+	// Sensitive requests (card reads, card or bank account writes, owner entry) offer no windows.
+	Sensitive bool `json:"sensitive,omitempty"`
+	// EntryURL is the owner entry page while the approver still has to type
+	// OwnerFields; approving happens by submitting that page.
+	EntryURL string `json:"entry_url,omitempty"`
 }
 
 // ApprovalEvent is broadcast over GET /approvals/events (SSE).
@@ -150,12 +159,13 @@ func (h *Handler) toApprovalView(req *models.ApprovalRequest) ApprovalView {
 				files = append(files, models.Attachment{Name: f.Name, Size: f.Size})
 			}
 			items = append(items, ApprovalItemView{
-				Item:      m.Item,
-				Vault:     req.Vault,
-				Operation: m.Operation,
-				Category:  m.Category,
-				Fields:    m.Labels(),
-				Files:     files,
+				Item:        m.Item,
+				Vault:       req.Vault,
+				Operation:   m.Operation,
+				Category:    firstNonEmpty(m.TargetCategory, m.Category),
+				Fields:      m.Labels(),
+				Files:       files,
+				OwnerFields: m.OwnerFields,
 			})
 		}
 	} else {
@@ -172,17 +182,26 @@ func (h *Handler) toApprovalView(req *models.ApprovalRequest) ApprovalView {
 				Operation: "read",
 				Fields:    fields,
 				Files:     s.Attachments,
+				Card:      s.Summary,
 			})
 		}
 	}
 
 	var options []ApprovalOption
+	entryURL := ""
 	if req.Status == models.StatusPending && !req.IsExpired() {
 		ttl := h.windowTTL(req)
-		options = append(options, ApprovalOption{ID: "approve", Label: "Approve", Style: "primary"})
-		if !req.IsWrite() && ttl > 0 {
+		if req.AwaitingOwner() {
+			entryURL = h.entryURL(req)
+		} else {
+			options = append(options, ApprovalOption{ID: "approve", Label: "Approve", Style: "primary"})
+		}
+		switch {
+		case req.Sensitive || ttl <= 0:
+			// Card requests are approved one at a time.
+		case !req.IsWrite():
 			options = append(options, ApprovalOption{ID: "approve_window", Label: "Approve " + shortDuration(ttl), Style: "secondary"})
-		} else if req.IsWrite() && ttl > 0 {
+		default:
 			options = append(options, ApprovalOption{ID: "approve_writes", Label: "Approve + " + shortDuration(ttl), Style: "secondary"})
 		}
 		options = append(options, ApprovalOption{ID: "deny", Label: "Deny", Style: "destructive"})
@@ -212,6 +231,8 @@ func (h *Handler) toApprovalView(req *models.ApprovalRequest) ApprovalView {
 		Approver:         req.Approver,
 		AutoApproved:     req.AutoApproved,
 		WriteWindowID:    req.WriteWindowID,
+		Sensitive:        req.Sensitive,
+		EntryURL:         entryURL,
 	}
 }
 
@@ -235,11 +256,24 @@ func approvalCardTitle(req *models.ApprovalRequest) string {
 }
 
 func approvalCardSummary(req *models.ApprovalRequest) string {
-	reason := firstNonEmpty(req.Reason, req.Context.Task)
-	if reason != "" {
-		return approvalCardTitle(req) + " in " + req.Vault + ": " + reason
+	s := approvalCardTitle(req) + " in " + req.Vault
+	if card := cardSummary(req); card != "" {
+		s += " (" + card + ")"
 	}
-	return approvalCardTitle(req) + " in " + req.Vault
+	if reason := firstNonEmpty(req.Context.Purpose, req.Reason, req.Context.Task); reason != "" {
+		s += ": " + reason
+	}
+	return s
+}
+
+// cardSummary returns the masked card of a single-card read, if any.
+func cardSummary(req *models.ApprovalRequest) string {
+	for _, s := range req.Secrets {
+		if s.Summary != "" {
+			return s.Summary
+		}
+	}
+	return ""
 }
 
 func shortDuration(d time.Duration) string {

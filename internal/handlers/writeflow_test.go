@@ -79,7 +79,7 @@ func newFakeConnect(t *testing.T, existing ...string) (*fakeConnect, *httptest.S
 			m := titleFilter.FindStringSubmatch(r.URL.Query().Get("filter"))
 			for _, item := range fc.items {
 				if m != nil && item.Title == m[1] {
-					out = append(out, opconnect.Item{ID: item.ID, Title: item.Title})
+					out = append(out, opconnect.Item{ID: item.ID, Title: item.Title, Category: item.Category})
 				}
 			}
 			_ = json.NewEncoder(w).Encode(out)

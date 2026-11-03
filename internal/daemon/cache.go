@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/johnuopini/secret-gate/internal/models"
 )
 
 type CacheEntry struct {
@@ -49,7 +51,12 @@ func cacheKey(secretName, vault string) string {
 	return fmt.Sprintf("%s:%s", secretName, vault)
 }
 
+// Store caches an item's values. Items with process-only values (card
+// number, CVV, PIN) are kept at most models.SensitiveCacheTTL.
 func (c *Cache) Store(secretName, vault string, fields map[string]string, ttl time.Duration) {
+	if fields[models.ProcessOnlyKey] != "" && ttl > models.SensitiveCacheTTL {
+		ttl = models.SensitiveCacheTTL
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()

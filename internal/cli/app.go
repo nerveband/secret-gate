@@ -51,6 +51,7 @@ Commands:
   passkey load       Put an approved passkey item into a browser tab for sign-in
   passkey release    Remove the authenticator; optionally save the sign count
   passkey list       List authenticators the daemon holds
+  browser fill       Type approved values (card number, CVV) into a browser form over DevTools
   write create       Create a 1Password item (values via --stdin, Telegram-approved)
   write update       Update a 1Password item (values via --stdin, Telegram-approved)
   write batch        Create or update up to 10 items behind one Telegram approval
@@ -113,6 +114,8 @@ func (a *App) Run(args []string) int {
 		return a.runAttachment(args[1:])
 	case "passkey":
 		return a.runPasskey(args[1:])
+	case "browser":
+		return a.runBrowser(args[1:])
 	case "ssh":
 		return a.runSSH(args[1:])
 	case "otp":

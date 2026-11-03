@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/requeststate"
 )
 
@@ -79,6 +80,8 @@ type fieldsPayload struct {
 type fieldsResponse struct {
 	SecretName string           `json:"secret_name"`
 	VaultName  string           `json:"vault_name"`
+	Category   string           `json:"category,omitempty"`
+	Card       *CardInfo        `json:"card,omitempty"`
 	Fields     []FieldInfo      `json:"fields"`
 	Files      []AttachmentInfo `json:"files,omitempty"`
 }
@@ -102,19 +105,21 @@ type secretRequestPayload struct {
 }
 
 type mutationPayload struct {
-	Operation string            `json:"operation"`
-	Category  string            `json:"category,omitempty"`
-	Fields    map[string]string `json:"fields"`
-	Files     []filePayload     `json:"files,omitempty"`
+	Operation   string            `json:"operation"`
+	Category    string            `json:"category,omitempty"`
+	Fields      map[string]string `json:"fields"`
+	Files       []filePayload     `json:"files,omitempty"`
+	OwnerFields []string          `json:"owner_fields,omitempty"`
 }
 
 // itemWritePayload is one batch entry on the wire, with file content.
 type itemWritePayload struct {
-	Item      string            `json:"item"`
-	Operation string            `json:"operation"`
-	Category  string            `json:"category,omitempty"`
-	Fields    map[string]string `json:"fields"`
-	Files     []filePayload     `json:"files,omitempty"`
+	Item        string            `json:"item"`
+	Operation   string            `json:"operation"`
+	Category    string            `json:"category,omitempty"`
+	Fields      map[string]string `json:"fields"`
+	Files       []filePayload     `json:"files,omitempty"`
+	OwnerFields []string          `json:"owner_fields,omitempty"`
 }
 
 // filePayload carries attachment content; encoding/json sends []byte as base64.
@@ -264,6 +269,8 @@ func (p *httpProxyClient) GetFields(secretName, vault string) (*FieldsResult, er
 	return &FieldsResult{
 		SecretName: fieldsResp.SecretName,
 		VaultName:  fieldsResp.VaultName,
+		Category:   fieldsResp.Category,
+		Card:       fieldsResp.Card,
 		Fields:     fieldsResp.Fields,
 		Files:      fieldsResp.Files,
 	}, nil
@@ -301,12 +308,12 @@ func (p *httpProxyClient) SubmitWrite(_ context.Context, vault, reason string, i
 		payload.SecretName = item.Item
 		payload.Action = item.Operation
 		payload.Secrets = []secretRequestPayload{{SecretName: item.Item, Vault: vault}}
-		payload.Mutation = &mutationPayload{Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files)}
+		payload.Mutation = &mutationPayload{Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files), OwnerFields: item.OwnerFields}
 	} else {
 		payload.Action = "write"
 		for _, item := range items {
 			payload.Mutations = append(payload.Mutations, itemWritePayload{
-				Item: item.Item, Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files),
+				Item: item.Item, Operation: item.Operation, Category: item.Category, Fields: item.Fields, Files: filesPayload(item.Files), OwnerFields: item.OwnerFields,
 			})
 		}
 	}
@@ -456,12 +463,16 @@ func (p *httpProxyClient) Retrieve(_ context.Context, secretURL, secretName, vau
 		if resolvedVault == "" {
 			resolvedVault = vault
 		}
-		if err := p.dc.Store(secretName, resolvedVault, fields, p.cacheTTLSec); err != nil {
+		ttl := p.cacheTTLSec
+		if fields[ProcessOnlyKey] != "" && (ttl <= 0 || ttl > int(models.SensitiveCacheTTL.Seconds())) {
+			ttl = int(models.SensitiveCacheTTL.Seconds()) // also capped by the daemon
+		}
+		if err := p.dc.Store(secretName, resolvedVault, fields, ttl); err != nil {
 			return nil, E(ErrInternal, "secret was approved but could not be cached locally: "+err.Error(),
 				"submit a new approval request; the one-time response has already been consumed")
 		}
 		if vault != resolvedVault {
-			if err := p.dc.Store(secretName, vault, fields, p.cacheTTLSec); err != nil {
+			if err := p.dc.Store(secretName, vault, fields, ttl); err != nil {
 				return nil, E(ErrInternal, "secret was approved but its requested-vault cache alias failed: "+err.Error(), "")
 			}
 		}

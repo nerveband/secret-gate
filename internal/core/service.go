@@ -126,15 +126,18 @@ func (s *Service) CachedFields(secretName, vault string) (map[string]string, err
 
 // ReadFields returns approved field values for model context. Attachments
 // are never returned here; they reach commands only through AttachmentExec.
+// Process-only values (card number, CVV, PIN) are withheld from a full read
+// and refused when named; they reach commands through exec or browser fill.
 func (s *Service) ReadFields(secretName, vault string, want []string) (map[string]string, error) {
 	values, err := s.CachedFields(secretName, vault)
 	if err != nil {
 		return nil, err
 	}
+	protected := ProcessOnlyKeys(values)
 	if len(want) == 0 {
 		out := make(map[string]string, len(values))
 		for name, value := range values {
-			if !strings.HasPrefix(name, AttachmentPrefix) {
+			if !strings.HasPrefix(name, AttachmentPrefix) && name != ProcessOnlyKey && !protected[name] {
 				out[name] = value
 			}
 		}
@@ -147,9 +150,13 @@ func (s *Service) ReadFields(secretName, vault string, want []string) (map[strin
 				fmt.Sprintf("run: secret-gate attachment exec --item %q --file %q --env FILE_PATH -- <command>", secretName, file))
 		}
 		actual, value, ok := ResolveField(values, name)
-		if !ok {
+		if !ok || actual == ProcessOnlyKey {
 			return nil, E(ErrNotFound, fmt.Sprintf("field %q is not available", name),
 				"available fields: "+strings.Join(FieldNames(values), ", "))
+		}
+		if protected[actual] {
+			return nil, E(ErrValidation, fmt.Sprintf("%q is process-only (card number, CVV, or PIN) and never enters model context", actual),
+				fmt.Sprintf("use: secret-gate browser fill --item %q --field '%s=<css selector>' ... or secret-gate exec --item %q --field %q --env VAR -- <command>", secretName, actual, secretName, actual))
 		}
 		out[actual] = value
 	}
@@ -203,10 +210,37 @@ func otpAmbiguity(values map[string]string, wanted string) error {
 // can survive into captured child output.
 func itemRedactor(secretName string, values map[string]string) *Redactor {
 	r := NewRedactor()
+	protected := ProcessOnlyKeys(values)
 	for name, v := range values {
+		if name == ProcessOnlyKey {
+			continue
+		}
 		r.Add(v, secretName+"/"+name)
+		if protected[name] {
+			// Card numbers are often printed in groups of four.
+			for _, sep := range []string{" ", "-"} {
+				if grouped := groupDigits(v, sep); grouped != v {
+					r.Add(grouped, secretName+"/"+name)
+				}
+			}
+		}
 	}
 	return r
+}
+
+// groupDigits writes a long digit string in groups of four ("4111 1111 ...").
+func groupDigits(v, sep string) string {
+	if len(v) < 12 || strings.Trim(v, "0123456789") != "" {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i += 4 {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(v[i:min(i+4, len(v))])
+	}
+	return b.String()
 }
 
 func (s *Service) Exec(ctx context.Context, req ExecRequest) (*ExecOutcome, error) {
@@ -408,8 +442,8 @@ func (s *Service) writeClient(vault, reason string, items []ItemWrite) (WriteCli
 	}
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
-		if item.Item == "" || (len(item.Fields) == 0 && len(item.Files) == 0) {
-			return nil, E(ErrValidation, "every item needs a title and at least one field or file", "")
+		if item.Item == "" || (len(item.Fields) == 0 && len(item.Files) == 0 && len(item.OwnerFields) == 0) {
+			return nil, E(ErrValidation, "every item needs a title and at least one field, file, or owner field", "")
 		}
 		if item.Operation != "create" && item.Operation != "update" {
 			return nil, E(ErrValidation, fmt.Sprintf("operation must be create or update, got %q", item.Operation), "")

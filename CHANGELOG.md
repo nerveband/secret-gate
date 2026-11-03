@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.0 (2026-11-03)
+
+Typed items: credit cards, API credentials, and secure notes in their native 1Password categories, with card numbers and CVVs kept out of model context. Design and threat model: [docs/typed-items.md](docs/typed-items.md).
+
+### Added
+- `--category card|api|note|login|password` on `write create` (and `category` in `write batch`, `write_item`, `write_items`) maps friendly labels onto native fields: cards (`cardholder`, `number`, `cvv`, `expiry`, `type`, `pin`, `bank`, billing address section), API credentials (`credential`, `username`, `hostname`, `expires`, `scopes`). Card numbers are Luhn-checked, the card type is detected from the number, and CVV, expiry, and date formats are validated before any approval. Updates match existing fields by alias, so `cvv` updates "verification number".
+- Owner entry: `--owner-fields cvv` (`owner_fields` in JSON and MCP) lets the approver type values the agent does not have. Telegram shows an "✍️ Enter values" button that opens a one-time page on `WEBHOOK_BASE_URL/entry/<token>`; submitting it approves the write. `--stdin` is optional with owner fields.
+- Masked card view without approval: `item fields` returns `card: {type, last4, expiry}` and marks number, CVV, and PIN fields `process_only`.
+- `request submit --purpose "<where>"` (`context.purpose` in MCP). Telegram, PushWard, and the Approver API show it next to the masked card: "aa.com checkout, Visa ending 1111, expires 08/2027".
+- `browser fill` (CLI) and `browser_fill` (MCP): type approved values into form fields over a loopback DevTools session (same-origin frames, shadow roots, cross-origin payment iframes with `--frame-url`, `<select>` menus, expiry formats like `expiry:MM/YY`). Card values only go to https pages. Output lists selectors, never values.
+- Approver API: `items[].card`, `items[].owner_fields`, `sensitive`, and `entry_url`.
+
+### Changed
+- Card number, CVV, and PIN values are process-only: `item read --reveal` and `read_item_fields` refuse them and leave them out of full reads; `exec` and `browser fill` use them. Reading them needs a purpose, and clients before 0.8.0 are refused.
+- Card reads that release a number, CVV, or PIN, card and bank account writes, and owner-entry writes need a tap on that request: read windows, write windows, and follow-ups never cover them, and those buttons are not offered. Secure notes keep the normal write rules.
+- Cached items with process-only values expire after 15 minutes.
+- Released DATE fields read as `YYYY-MM-DD` and MONTH_YEAR fields as `MM/YYYY` (Connect returns Unix seconds and `YYYYMM`).
+- The redactor also catches card numbers printed in groups of four.
+- Telegram write approvals name the item type when the server knows it.
+
 ## v0.7.0 (2026-10-25)
 
 File attachments and agent-owned passkeys. Research, design, and threat model: [docs/passkeys-attachments.md](docs/passkeys-attachments.md).

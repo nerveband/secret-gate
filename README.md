@@ -215,6 +215,34 @@ and `Deny`. Pending writes wait up to an hour, get one reminder ten minutes
 before expiry, and the message changes to "Expired" when the request lapses.
 See [docs/write-ux.md](docs/write-ux.md) for what each approval covers.
 
+### Cards, API credentials, and secure notes
+
+`--category card|api|note|login|password` creates items in the native
+1Password category, so they look right in the 1Password app. Friendly labels
+map onto the native fields (cards: `cardholder`, `number`, `cvv`, `expiry`,
+`type`, `pin`, `bank`, `billing_address`, `city`, `state`, `zip`, `country`;
+API credentials: `credential`, `username`, `hostname`, `expires`, `scopes`).
+Card numbers are Luhn-checked and the card type is detected when omitted.
+Values the agent does not have are typed by the approver:
+`--owner-fields cvv` puts an "Enter values" link on the Telegram approval,
+and saving that page on the phone approves the write.
+
+```bash
+secret-gate item fields --item "Visa travel"          # masked: type, last 4, expiry; no approval
+secret-gate write update --item "Visa travel" --vault "AI Agents" --owner-fields cvv --reason "add the CVV" --no-wait
+secret-gate request submit --item "Visa travel" --fields number,cvv,expiry,cardholder \
+  --purpose "aa.com checkout" --reason "pay for the DFW flight"
+secret-gate browser fill --item "Visa travel" --cdp "$(agent-browser get cdp-url)" --page-url aa.com \
+  --field 'number=#cardNumber' --field 'cvv=#cvv' --field 'expiry:MM/YY=#exp'
+```
+
+Card numbers, CVVs, and PINs are process-only: `exec` and `browser fill`
+use them, `item read` and `read_item_fields` never return them. Reading them
+needs `--purpose`, shown in Telegram as "aa.com checkout, Visa ending 1111";
+card reads and card writes always need a tap on that request (no read or
+write windows), and card values stay cached for at most 15 minutes. See
+[docs/typed-items.md](docs/typed-items.md).
+
 ### Attachments
 
 `item fields` lists an item's attachments (name, size, ID). Approve one by

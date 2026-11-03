@@ -72,10 +72,10 @@ func TestPutItemCreatesSecureNote(t *testing.T) {
 }
 
 func TestNewFieldRecognizesOTPAndConcealedAliases(t *testing.T) {
-	if field := newField("", "MFA", "seed"); field.Type != "OTP" {
+	if field := nf("", "MFA", "seed"); field.Type != "OTP" {
 		t.Fatalf("MFA type = %s", field.Type)
 	}
-	if field := newField("", "api_key", "value"); field.Type != "CONCEALED" {
+	if field := nf("", "api_key", "value"); field.Type != "CONCEALED" {
 		t.Fatalf("api_key type = %s", field.Type)
 	}
 }
@@ -124,8 +124,14 @@ func TestCheckWriteCapability(t *testing.T) {
 	}
 }
 
+// nf builds a field for tests whose values are valid for their category.
+func nf(category, label, value string) Field {
+	f, _ := newField(category, label, value)
+	return f
+}
+
 func TestNewFieldPasswordUsesPasswordPurpose(t *testing.T) {
-	f := newField("PASSWORD", "password", "v")
+	f := nf("PASSWORD", "password", "v")
 	if f.ID != "password" || f.Purpose != "PASSWORD" || f.Type != "CONCEALED" {
 		t.Fatalf("field = %#v", f)
 	}
@@ -150,14 +156,14 @@ func TestPutItemSurfacesConnectValidationError(t *testing.T) {
 
 func TestNewFieldPurposesOnlyWhereTemplatesNeedThem(t *testing.T) {
 	for cat, want := range map[string]string{"PASSWORD": "PASSWORD", "LOGIN": "PASSWORD", "SERVER": "", "DATABASE": "", "": ""} {
-		if got := newField(cat, "password", "v").Purpose; got != want {
+		if got := nf(cat, "password", "v").Purpose; got != want {
 			t.Errorf("%s password purpose = %q, want %q", cat, got, want)
 		}
 	}
-	if newField("LOGIN", "username", "u").Purpose != "USERNAME" || newField("SERVER", "username", "u").Purpose != "" {
+	if nf("LOGIN", "username", "u").Purpose != "USERNAME" || nf("SERVER", "username", "u").Purpose != "" {
 		t.Fatal("username purpose must apply to LOGIN only")
 	}
-	if newField("API_CREDENTIAL", "credential", "v").Type != "CONCEALED" {
+	if nf("API_CREDENTIAL", "credential", "v").Type != "CONCEALED" {
 		t.Fatal("credential must be concealed")
 	}
 }
@@ -185,23 +191,43 @@ func TestPrecheckMutationRejectsDoomedWrites(t *testing.T) {
 	cases := []struct {
 		name, title, op, cat string
 		fields               map[string]string
+		owner                []string
 		bad                  bool
 	}{
-		{"create ok", "new", "create", "password", pw, false},
-		{"create existing", "exists", "create", "PASSWORD", pw, true},
-		{"password category without password", "new", "create", "PASSWORD", map[string]string{"notes": "n"}, true},
-		{"empty value", "new", "create", "PASSWORD", map[string]string{"password": ""}, true},
-		{"quote in title", `a"b`, "create", "", pw, true},
-		{"document unsupported", "new", "create", "DOCUMENT", pw, true},
-		{"update ok", "exists", "update", "", pw, false},
-		{"update missing", "new", "update", "", pw, true},
-		{"update ambiguous", "dup", "update", "", pw, true},
+		{"create ok", "new", "create", "password", pw, nil, false},
+		{"create existing", "exists", "create", "PASSWORD", pw, nil, true},
+		{"password category without password", "new", "create", "PASSWORD", map[string]string{"notes": "n"}, nil, true},
+		{"password typed by the approver", "new", "create", "PASSWORD", nil, []string{"password"}, false},
+		{"empty value", "new", "create", "PASSWORD", map[string]string{"password": ""}, nil, true},
+		{"quote in title", `a"b`, "create", "", pw, nil, true},
+		{"document unsupported", "new", "create", "DOCUMENT", pw, nil, true},
+		{"update ok", "exists", "update", "", pw, nil, false},
+		{"update missing", "new", "update", "", pw, nil, true},
+		{"update ambiguous", "dup", "update", "", pw, nil, true},
+		{"card ok", "new", "create", "card", map[string]string{"number": "4111 1111 1111 1111", "cvv": "123", "expiry": "08/27"}, nil, false},
+		{"card without number", "new", "create", "card", map[string]string{"cvv": "123"}, nil, true},
+		{"card number from the approver", "new", "create", "card", map[string]string{"cardholder": "A"}, []string{"number", "cvv"}, false},
+		{"card number typo", "new", "create", "card", map[string]string{"number": "4111111111111112"}, nil, true},
+		{"card cvv letters", "new", "create", "card", map[string]string{"number": "4111111111111111", "cvv": "12a"}, nil, true},
+		{"card bad expiry", "new", "create", "card", map[string]string{"number": "4111111111111111", "expiry": "13/27"}, nil, true},
+		{"card unknown type", "new", "create", "card", map[string]string{"number": "4111111111111111", "type": "bogus"}, nil, true},
+		{"card number twice", "new", "create", "card", map[string]string{"number": "4111111111111111", "ccnum": "4111111111111111"}, nil, true},
+		{"field both sent and asked", "new", "create", "card", map[string]string{"number": "4111111111111111"}, []string{"number"}, true},
+		{"api bad date", "new", "create", "api", map[string]string{"credential": "x", "expires": "next year"}, nil, true},
+		{"api ok", "new", "create", "api", map[string]string{"credential": "x", "expires": "2027-08-01", "host": "https://api.example.com"}, nil, false},
 	}
 	for _, tc := range cases {
-		err := c.PrecheckMutation("Agents", tc.title, tc.op, tc.cat, tc.fields)
+		_, err := c.PrecheckMutation("Agents", tc.title, tc.op, tc.cat, tc.fields, tc.owner)
 		var verr *ValidationError
 		if got := errors.As(err, &verr); got != tc.bad || (!tc.bad && err != nil) {
 			t.Errorf("%s: err = %v, want validation=%v", tc.name, err, tc.bad)
+		}
+		if err != nil {
+			for _, v := range tc.fields {
+				if len(v) > 2 && strings.Contains(err.Error(), v) {
+					t.Errorf("%s: error message contains a field value", tc.name)
+				}
+			}
 		}
 	}
 }

@@ -45,7 +45,8 @@ type Chat struct {
 // InlineKeyboardButton represents an inline keyboard button
 type InlineKeyboardButton struct {
 	Text         string `json:"text"`
-	CallbackData string `json:"callback_data"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
 }
 
 // InlineKeyboardMarkup represents an inline keyboard
@@ -168,8 +169,17 @@ func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL
 
 func approvalMessage(req *models.ApprovalRequest) string {
 	var b strings.Builder
-	b.WriteString("🔐 1Password access request\n\nAction:\n")
+	b.WriteString("🔐 1Password access request\n\n")
+	if headline := cardHeadline(req); headline != "" {
+		b.WriteString("💳 <b>" + html.EscapeString(headline) + "</b>\n\n")
+	}
+	b.WriteString("Action:\n")
 	b.WriteString(actionDescription(req))
+	if req.AwaitingOwner() {
+		b.WriteString("\n\n✍️ Tap \"Enter values\" to type the requested values on this device (Tailscale). Saving the page approves the write; the agent never sees them.")
+	} else if req.Sensitive {
+		b.WriteString("\n\nCard requests are approved one at a time (no windows).")
+	}
 	writeReason(&b, req)
 	writeRequester(&b, req)
 	b.WriteString("\n\nExpires: ")
@@ -178,6 +188,28 @@ func approvalMessage(req *models.ApprovalRequest) string {
 	b.WriteString(html.EscapeString(req.ID))
 	b.WriteString("</code>")
 	return b.String()
+}
+
+// cardHeadline is "aa.com checkout, Mastercard ending 1100, expires 08/2027"
+// for card reads, so the approver sees where the card is used.
+func cardHeadline(req *models.ApprovalRequest) string {
+	if req.IsWrite() {
+		return ""
+	}
+	card := ""
+	for _, s := range req.Secrets {
+		if s.Summary != "" {
+			card = s.Summary
+			break
+		}
+	}
+	if card == "" {
+		return ""
+	}
+	if req.Context.Purpose == "" {
+		return card
+	}
+	return req.Context.Purpose + ", " + card
 }
 
 func approvedMessage(req *models.ApprovalRequest, approver, scope string) string {
@@ -205,6 +237,36 @@ func actionDescription(req *models.ApprovalRequest) string {
 		return actionSummary(req) + "\n" + writeDetails(req)
 	}
 	return actionSummary(req) + "\nVault: " + html.EscapeString(req.Vault) + attachmentLines(req)
+}
+
+// agentLabels are the labels whose values the agent sent.
+func agentLabels(m models.ItemMutation) []string {
+	owner := make(map[string]bool, len(m.OwnerFields))
+	for _, l := range m.OwnerFields {
+		owner[l] = true
+	}
+	var out []string
+	for _, l := range m.Labels() {
+		if !owner[l] {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// categoryName names the item type for the approver once the server has
+// resolved it; it is empty otherwise.
+func categoryName(m models.ItemMutation) string {
+	switch m.TargetCategory {
+	case "":
+		return ""
+	case "CREDIT_CARD":
+		return "💳 credit card"
+	case "API_CREDENTIAL":
+		return "API credential"
+	default:
+		return strings.ToLower(strings.ReplaceAll(m.TargetCategory, "_", " "))
+	}
 }
 
 // attachmentLines lists requested attachments by name and size, never content.
@@ -266,8 +328,14 @@ func writeDetails(req *models.ApprovalRequest) string {
 	if len(req.Mutations) == 1 {
 		m := req.Mutations[0]
 		var lines []string
-		if len(m.Fields) > 0 {
-			lines = append(lines, "Fields: "+html.EscapeString(strings.Join(m.Labels(), ", ")))
+		if c := categoryName(m); c != "" {
+			lines = append(lines, "Type: "+html.EscapeString(c))
+		}
+		if labels := agentLabels(m); len(labels) > 0 {
+			lines = append(lines, "Fields: "+html.EscapeString(strings.Join(labels, ", ")))
+		}
+		if len(m.OwnerFields) > 0 {
+			lines = append(lines, "✍️ You enter: "+html.EscapeString(strings.Join(m.OwnerFields, ", ")))
 		}
 		if len(m.Files) > 0 {
 			lines = append(lines, "📎 Files: "+fileList(m.Files))
@@ -277,8 +345,11 @@ func writeDetails(req *models.ApprovalRequest) string {
 	lines := make([]string, 0, len(req.Mutations))
 	for _, m := range req.Mutations {
 		var parts []string
-		if len(m.Fields) > 0 {
-			parts = append(parts, "fields: "+html.EscapeString(strings.Join(m.Labels(), ", ")))
+		if labels := agentLabels(m); len(labels) > 0 {
+			parts = append(parts, "fields: "+html.EscapeString(strings.Join(labels, ", ")))
+		}
+		if len(m.OwnerFields) > 0 {
+			parts = append(parts, "you enter: "+html.EscapeString(strings.Join(m.OwnerFields, ", ")))
 		}
 		if len(m.Files) > 0 {
 			parts = append(parts, "files: "+fileList(m.Files))
@@ -296,13 +367,19 @@ func operationVerb(operation string) string {
 }
 
 func approvalKeyboard(req *models.ApprovalRequest, windowTTL time.Duration) *InlineKeyboardMarkup {
+	deny := []InlineKeyboardButton{{Text: "❌ Deny", CallbackData: "deny:" + req.ID}}
+	if req.AwaitingOwner() && req.EntryURL != "" {
+		return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "✍️ Enter values", URL: req.EntryURL}}, deny}}
+	}
 	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: "approve:" + req.ID}}
-	if !req.IsWrite() {
+	switch {
+	case req.Sensitive:
+	case !req.IsWrite():
 		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve " + formatDurationLabel(windowTTL), CallbackData: "approve_window:" + req.ID})
-	} else if windowTTL > 0 {
+	case windowTTL > 0:
 		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve + writes " + formatDurationLabel(windowTTL), CallbackData: "approve_writes:" + req.ID})
 	}
-	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, {{Text: "❌ Deny", CallbackData: "deny:" + req.ID}}}}
+	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, deny}}
 }
 
 func revokeKeyboard(windowID string) *InlineKeyboardMarkup {
@@ -363,7 +440,11 @@ func writeReason(b *strings.Builder, req *models.ApprovalRequest) {
 
 func reasonBlock(req *models.ApprovalRequest) string {
 	reason := firstNonEmpty(req.Reason, req.Context.Task, "No reason provided.")
-	return "\n\nReason:\n<b>" + html.EscapeString(reason) + "</b>"
+	purpose := ""
+	if req.Context.Purpose != "" {
+		purpose = "\n\nPurpose:\n<b>" + html.EscapeString(req.Context.Purpose) + "</b>"
+	}
+	return purpose + "\n\nReason:\n<b>" + html.EscapeString(reason) + "</b>"
 }
 
 func writeRequester(b *strings.Builder, req *models.ApprovalRequest) {
@@ -391,7 +472,7 @@ func requesterBlock(req *models.ApprovalRequest) string {
 }
 
 func purposeSuffix(req *models.ApprovalRequest) string {
-	text := firstNonEmpty(req.Context.Task, req.Reason, req.Action, "request")
+	text := firstNonEmpty(cardHeadline(req), req.Context.Task, req.Reason, req.Action, "request")
 	text = strings.Join(strings.Fields(text), " ")
 	text = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(text, "."), "!"), "?")
 	runes := []rune(text)

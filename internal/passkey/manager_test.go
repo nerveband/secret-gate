@@ -20,6 +20,7 @@ type fakeBrowser struct {
 	creds    []Credential
 	calls    []string
 	attached string
+	typed    []string
 }
 
 func (f *fakeBrowser) log() []string {
@@ -53,6 +54,31 @@ func (f *fakeBrowser) handle(method string, params json.RawMessage) (any, string
 		return map[string]any{}, ""
 	case "WebAuthn.getCredentials":
 		return map[string]any{"credentials": f.creds}, ""
+	case "Runtime.evaluate":
+		var p struct {
+			Expression string `json:"expression"`
+		}
+		_ = json.Unmarshal(params, &p)
+		if strings.Contains(p.Expression, "missing") {
+			return map[string]any{"result": map[string]any{"type": "object", "subtype": "null"}}, ""
+		}
+		return map[string]any{"result": map[string]any{"type": "object", "subtype": "node", "objectId": "O1"}}, ""
+	case "Runtime.callFunctionOn":
+		var p struct {
+			Function string `json:"functionDeclaration"`
+		}
+		_ = json.Unmarshal(params, &p)
+		if strings.Contains(p.Function, "scrollIntoView") {
+			return map[string]any{"result": map[string]any{"type": "string", "value": "INPUT"}}, ""
+		}
+		return map[string]any{"result": map[string]any{"type": "boolean", "value": true}}, ""
+	case "Input.insertText":
+		var p struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(params, &p)
+		f.typed = append(f.typed, p.Text)
+		return map[string]any{}, ""
 	}
 	return map[string]any{}, ""
 }

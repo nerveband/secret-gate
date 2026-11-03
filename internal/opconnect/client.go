@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/johnuopini/secret-gate/internal/models"
 )
 
 // Client wraps the 1Password Connect API
@@ -293,14 +295,16 @@ type SearchResult struct {
 	MatchType string  `json:"match_type"` // "exact", "prefix", "contains", "fuzzy"
 }
 
-// FieldInfo holds metadata about a field without its value
+// FieldInfo holds metadata about a field without its value. ProcessOnly
+// fields (card number, CVV, PIN) reach commands and browser fields only.
 type FieldInfo struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Type      string `json:"type"`
-	Purpose   string `json:"purpose,omitempty"`
-	Section   string `json:"section,omitempty"`
-	Reference string `json:"reference,omitempty"`
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Purpose     string `json:"purpose,omitempty"`
+	Section     string `json:"section,omitempty"`
+	Reference   string `json:"reference,omitempty"`
+	ProcessOnly bool   `json:"process_only,omitempty"`
 }
 
 // FileInfo is attachment metadata: name, size, and ID, never content.
@@ -311,12 +315,15 @@ type FileInfo struct {
 	Section string `json:"section,omitempty"`
 }
 
-// ItemMeta describes an item without any values.
+// ItemMeta describes an item without any values. Card is the masked view
+// of a CREDIT_CARD item (type, last four digits, expiry).
 type ItemMeta struct {
-	Vault  string
-	Title  string
-	Fields []FieldInfo
-	Files  []FileInfo
+	Vault    string
+	Title    string
+	Category string
+	Fields   []FieldInfo
+	Files    []FileInfo
+	Card     *CardSummary
 }
 
 // GetItemFields returns field and attachment metadata for an item without values
@@ -379,12 +386,13 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 				section = f.Section.Label
 			}
 			fields = append(fields, FieldInfo{
-				ID:        f.ID,
-				Label:     f.Label,
-				Type:      f.Type,
-				Purpose:   f.Purpose,
-				Section:   section,
-				Reference: f.Reference,
+				ID:          f.ID,
+				Label:       f.Label,
+				Type:        f.Type,
+				Purpose:     f.Purpose,
+				Section:     section,
+				Reference:   f.Reference,
+				ProcessOnly: isProcessOnly(item.Category, f),
 			})
 		}
 	}
@@ -402,7 +410,7 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 		files = append(files, FileInfo{ID: f.ID, Name: f.Name, Size: f.Size, Section: section})
 	}
 
-	return &ItemMeta{Vault: actualVault, Title: actualTitle, Fields: fields, Files: files}, nil
+	return &ItemMeta{Vault: actualVault, Title: actualTitle, Category: item.Category, Fields: fields, Files: files, Card: summarizeCard(item)}, nil
 }
 
 // PutItem creates or replaces an item through 1Password Connect. For updates,
@@ -442,19 +450,37 @@ func (c *Client) PutItem(vaultName, itemTitle, operation, category string, value
 		return nil, fmt.Errorf("unsupported mutation operation %q", operation)
 	}
 
-	for label, value := range values {
+	for _, label := range sortedKeys(values) {
+		value := values[label]
+		matchID := ""
+		if f, ok := templateFieldFor(item.Category, label); ok {
+			matchID = f.ID
+		}
 		found := false
 		for i := range item.Fields {
-			if item.Fields[i].Label == label || item.Fields[i].ID == label {
+			if item.Fields[i].Label == label || item.Fields[i].ID == label || (matchID != "" && item.Fields[i].ID == matchID) {
+				if typed, ok, err := typedField(item.Category, label, value); err != nil {
+					return nil, err
+				} else if ok {
+					value = typed.Value
+				}
 				item.Fields[i].Value = value
 				found = true
 				break
 			}
 		}
 		if !found {
-			item.Fields = append(item.Fields, newField(item.Category, label, value))
+			field, err := newField(item.Category, label, value)
+			if err != nil {
+				return nil, err
+			}
+			item.Fields = append(item.Fields, field)
 		}
 	}
+	if operation == "create" {
+		fillCardType(&item)
+	}
+	ensureSections(&item)
 	body, err := json.Marshal(item)
 	if err != nil {
 		return nil, fmt.Errorf("encoding item: %w", err)
@@ -587,7 +613,10 @@ func purposeCategory(category string) string {
 	return ""
 }
 
-func newField(category, label, value string) Field {
+func newField(category, label, value string) (Field, error) {
+	if field, ok, err := typedField(category, label, value); ok || err != nil {
+		return field, err
+	}
 	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(label))
 	field := Field{ID: label, Label: label, Type: "STRING", Value: value}
 	switch normalized {
@@ -617,7 +646,7 @@ func newField(category, label, value string) Field {
 	case "email", "emailaddress":
 		field.Type = "EMAIL"
 	}
-	return field
+	return field, nil
 }
 
 // ListItemsInVault returns all items in a vault (titles only, no fields)
@@ -736,9 +765,13 @@ func (c *Client) FindSecretAcrossVaults(secretName string) (map[string]string, s
 }
 
 // itemFieldValues provides convenient labels while retaining stable selectors.
-// Duplicate labels remain reachable by field ID and section.label.
+// Duplicate labels remain reachable by field ID and section.label. Card
+// numbers, CVVs, and PINs are listed under models.ProcessOnlyKey so clients
+// keep them out of model context. Dates read as YYYY-MM-DD and month-year
+// fields as MM/YYYY, as the 1Password app shows them.
 func itemFieldValues(item *Item) map[string]string {
 	fields := make(map[string]string)
+	keys := make(map[string][]string)
 	labelCounts := make(map[string]int)
 	for _, f := range item.Fields {
 		if f.Label != "" {
@@ -747,31 +780,43 @@ func itemFieldValues(item *Item) map[string]string {
 	}
 	for _, f := range item.Fields {
 		value := normalizeFieldValue(f)
+		set := func(key string) {
+			fields[key] = value
+			keys[f.ID] = append(keys[f.ID], key)
+		}
 		if f.ID != "" {
-			fields[f.ID] = value
+			set(f.ID)
 			// OTP-type fields stay reachable by OTP alias whatever their label.
 			if strings.EqualFold(f.Type, "OTP") && !strings.HasPrefix(f.ID, "TOTP_") {
-				fields["TOTP_"+f.ID] = value
+				set("TOTP_" + f.ID)
 			}
 		}
 		if f.Label == "" {
 			continue
 		}
 		if labelCounts[f.Label] == 1 {
-			fields[f.Label] = value
+			set(f.Label)
 		}
 		if f.Section != nil && f.Section.Label != "" {
-			fields[f.Section.Label+"."+f.Label] = value
+			set(f.Section.Label + "." + f.Label)
 		}
+	}
+	if marker := processOnlyMarker(item, keys); marker != "" {
+		fields[models.ProcessOnlyKey] = marker
 	}
 	return fields
 }
 
 func normalizeFieldValue(f Field) string {
-	if !strings.EqualFold(f.Type, "SSHKEY") {
-		return f.Value
+	switch strings.ToUpper(f.Type) {
+	case "SSHKEY":
+		return normalizeSSHKeyValue(f.Value)
+	case "DATE":
+		return presentDate(f.Value)
+	case "MONTH_YEAR":
+		return presentMonthYear(f.Value)
 	}
-	return normalizeSSHKeyValue(f.Value)
+	return f.Value
 }
 
 func normalizeSSHKeyValue(value string) string {
@@ -870,72 +915,113 @@ func fuzzyScore(query, target string) (float64, string) {
 	return 0, ""
 }
 
-// NormalizeCategory upper-cases and trims a category, defaulting to SECURE_NOTE.
+// NormalizeCategory upper-cases and trims a category, defaulting to
+// SECURE_NOTE. Friendly names (card, api, note, login, bank, ...) map to
+// the native 1Password category.
 func NormalizeCategory(category string) string {
+	if native, ok := categoryAliases[normalizeLabel(category)]; ok {
+		return native
+	}
 	category = strings.ToUpper(strings.TrimSpace(category))
 	if category == "" {
 		return "SECURE_NOTE"
 	}
-	return category
+	return strings.ReplaceAll(category, " ", "_")
 }
+
+// MaxOwnerFields caps how many values one entry page asks the approver for.
+const MaxOwnerFields = 10
 
 // PrecheckMutation rejects writes that Connect would refuse after the human
 // has already approved, so approvals are never spent on doomed requests.
-// Values are never included in returned messages.
-func (c *Client) PrecheckMutation(vaultName, title, operation, category string, values map[string]string) error {
+// ownerFields are labels the approver will type on the entry page; their
+// values are checked once entered. It returns the category of the item that
+// is created or updated. Values are never included in returned messages.
+func (c *Client) PrecheckMutation(vaultName, title, operation, category string, values map[string]string, ownerFields []string) (string, error) {
 	bad := func(format string, a ...any) error {
 		return &ValidationError{Message: fmt.Sprintf(format, a...)}
 	}
 	if strings.TrimSpace(title) == "" {
-		return bad("item title is empty")
+		return "", bad("item title is empty")
 	}
 	if strings.Contains(title, `"`) {
-		return bad("item titles containing a double quote cannot be looked up through Connect")
+		return "", bad("item titles containing a double quote cannot be looked up through Connect")
 	}
 	for label, value := range values {
 		if strings.TrimSpace(label) == "" {
-			return bad("field labels must not be empty")
+			return "", bad("field labels must not be empty")
 		}
 		if value == "" {
-			return bad("field %q has an empty value", label)
+			return "", bad("field %q has an empty value", label)
 		}
+	}
+	if len(ownerFields) > MaxOwnerFields {
+		return "", bad("ask the approver for at most %d fields", MaxOwnerFields)
+	}
+	all := make(map[string]string, len(values)+len(ownerFields))
+	for label, value := range values {
+		all[label] = value
+	}
+	for _, label := range ownerFields {
+		if strings.TrimSpace(label) == "" {
+			return "", bad("owner field labels must not be empty")
+		}
+		if _, dup := all[label]; dup {
+			return "", bad("field %q is both sent and asked of the approver", label)
+		}
+		all[label] = ""
 	}
 	vault, err := c.ResolveVault(vaultName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	existing, err := c.findByTitle(vault.ID, title)
 	if err != nil {
-		return err
+		return "", err
 	}
 	switch operation {
 	case "create":
 		category = NormalizeCategory(category)
 		if category == "DOCUMENT" || category == "CUSTOM" {
-			return bad("1Password Connect cannot create %s items", category)
+			return "", bad("1Password Connect cannot create %s items", category)
 		}
 		if len(existing) > 0 {
-			return bad("an item titled %q already exists in this vault; use update", title)
+			return "", bad("an item titled %q already exists in this vault; use update", title)
 		}
 		if category == "PASSWORD" {
 			found := false
-			for label := range values {
-				if newField(category, label, "x").Purpose == "PASSWORD" {
+			for label := range all {
+				if f, _ := newField(category, label, "x"); f.Purpose == "PASSWORD" {
 					found = true
 				}
 			}
 			if !found {
-				return bad("PASSWORD items require a non-empty \"password\" field")
+				return "", bad("PASSWORD items require a non-empty \"password\" field")
+			}
+		}
+		if category == "CREDIT_CARD" {
+			found := false
+			for label := range all {
+				if f, ok := templateFieldFor(category, label); ok && f.ID == "ccnum" {
+					found = true
+				}
+			}
+			if !found {
+				return "", bad("CREDIT_CARD items need a card \"number\" field (send it, or ask the approver with owner fields)")
 			}
 		}
 	case "update":
 		switch len(existing) {
 		case 0:
-			return bad("no item titled %q exists in this vault; use create", title)
+			return "", bad("no item titled %q exists in this vault; use create", title)
 		case 1:
+			category = existing[0].Category
 		default:
-			return bad("%d items are titled %q; rename duplicates before updating", len(existing), title)
+			return "", bad("%d items are titled %q; rename duplicates before updating", len(existing), title)
 		}
 	}
-	return nil
+	if err := ValidateTypedFields(category, all); err != nil {
+		return "", err
+	}
+	return category, nil
 }

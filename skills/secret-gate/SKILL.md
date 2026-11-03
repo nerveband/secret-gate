@@ -1,6 +1,6 @@
 ---
 name: secret-gate
-description: Request and use 1Password items through Telegram approval. CLI-first with JSON envelopes and deterministic exit codes; also available as MCP tools. Supports arbitrary fields, secure notes, OTP codes, SSH keys, file attachments, agent-owned passkeys, and approval-gated item writes.
+description: Request and use 1Password items through Telegram approval. CLI-first with JSON envelopes and deterministic exit codes; also available as MCP tools. Supports credit cards (masked view, owner-typed CVV, checkout browser fill), API credentials, secure notes, arbitrary fields, OTP codes, SSH keys, file attachments, agent-owned passkeys, and approval-gated item writes.
 ---
 
 # Secret Gate
@@ -44,7 +44,7 @@ approval.
 
 - `metadata-only`: search, fields, request, daemon — never touches values.
 - `process-only`: `exec`, `ssh`, `otp exec`, `attachment exec`,
-  `passkey load`: the value goes to a child process or the browser;
+  `passkey load`, `browser fill`: the value goes to a child process or the browser;
   exact occurrences in output come back as `[REDACTED:item/field]`.
 - `model-visible`: `item read --reveal`, `otp show --reveal` — the value
   enters your context. Requires the explicit `--reveal` flag.
@@ -124,6 +124,69 @@ already exists, `update` targets a missing or duplicated title, or the title
 contains a double quote. Categories are case-insensitive. Connect makes a
 new item visible to reads after a few seconds; wait before reading it back.
 
+## Cards, API keys, secure notes (typed items)
+
+Use `--category card|api|note|login|password` so items land in the native
+1Password category. Friendly labels map onto native fields:
+- `card`: `cardholder`, `number`, `cvv`, `expiry` (MM/YY), `type` (detected
+  when omitted), `pin`, `bank`, `billing_address`, `city`, `state`, `zip`,
+  `country`. Numbers are Luhn-checked before any approval.
+- `api`: `credential` (key/secret/token), `username` (key id/client id),
+  `hostname` (host/base_url), `expires` (YYYY-MM-DD), `scopes`.
+- `note`: `note` plus any custom labels.
+
+Never ask the user to paste a card number, CVV, PIN, or key into chat. If
+you do not have a value, let the owner type it on their phone with
+`--owner-fields`: Telegram shows an "Enter values" link, and saving that
+page approves the write. You never see the value.
+
+```bash
+# save a card: values you have via stdin, the rest typed by the owner
+echo '{"fields":{"cardholder":"<name>","billing_address":"<street>","zip":"<zip>"}}' \
+  | secret-gate write create --item "Visa travel" --vault "AI Agents" --category card --owner-fields number,cvv,expiry --reason "store the travel card" --stdin --no-wait
+# add a missing CVV to an existing card (no stdin needed)
+secret-gate write update --item "Visa travel" --vault "AI Agents" --owner-fields cvv --reason "add the CVV for checkout" --no-wait
+# API credential and a secure note in one approval
+echo '{"items":[{"item":"Stripe live","operation":"create","category":"api","fields":{"credential":"<key>","hostname":"https://api.stripe.com"}},{"item":"Trip notes","operation":"create","category":"note","fields":{"note":"<text>"}}]}' \
+  | secret-gate write batch --vault "AI Agents" --reason "store Stripe key and trip notes" --stdin --no-wait
+```
+
+Card rules: `item fields` shows the masked card (`card.type`, `card.last4`,
+`card.expiry`) with no approval; use it to confirm the right card and to
+type the expiry. The number, CVV, and PIN are process-only: `item read`
+refuses them; only `browser fill` and `exec` can use them. Requesting them
+needs `--purpose` naming the merchant; the approver sees "aa.com checkout,
+Visa ending 1111". Card requests need their own tap (no windows), and card
+values stay cached for 15 minutes.
+
+### Recipe: pay at a checkout with a stored card (CVV included)
+
+```bash
+# 1. pick the card without approval (masked: type, last 4, expiry)
+secret-gate item fields --item "Visa travel" --vault "AI Agents"
+# 2. approve exactly the fields the form needs, naming the merchant
+secret-gate request submit --item "Visa travel" --vault "AI Agents" --fields cardholder,number,cvv,expiry,zip \
+  --purpose "aa.com checkout" --reason "pay for flight AA 1234 DFW-LGA"
+# 3. get refs for the card form and the Pay button BEFORE filling
+agent-browser snapshot -i
+# 4. type the values into the page (selectors, not refs); nothing is printed
+secret-gate browser fill --item "Visa travel" --vault "AI Agents" --cdp "$(agent-browser get cdp-url)" --page-url aa.com \
+  --field 'cardholder=#nameOnCard' --field 'number=#cardNumber' --field 'expiry:MM/YY=#expiration' \
+  --field 'cvv=#securityCode' --field 'zip=#billingZip'
+# 5. click Pay by the ref from step 3; do not snapshot or screenshot the filled form
+agent-browser click @e42
+```
+
+- Separate month and year menus: `--field 'expiry:MM=#expMonth' --field 'expiry:YYYY=#expYear'`.
+- A card form inside a cross-origin payment iframe (Stripe, Adyen,
+  Braintree): add `--frame-url js.stripe.com` (substring of the iframe URL).
+- Check `data.results[].filled` in the output; `exit 1` means a selector
+  matched nothing. Values never appear in the output.
+- Without a DevTools browser, pass values to a script with `exec` instead,
+  one field per call (nest calls for several fields).
+- If the card has no CVV stored, run the `write update ... --owner-fields cvv`
+  command above and wait for the owner; do not ask for it in chat.
+
 ## Attachments
 
 ```bash
@@ -195,12 +258,17 @@ narrow `fields`) → `exec_with_secret` / `ssh_with_secret` /
 writes. Attachments: `request_secret(fields=["file:<name>"])` →
 `read_attachment`; `attach_file` or `files` on `write_item(s)`. Passkeys:
 `passkey_arm` → `passkey_register` → `passkey_load` → `passkey_release`.
-Same rules.
+Cards: `inspect_fields` (masked `card`) → `request_secret` with
+`context.purpose` → `browser_fill`; save with `write_item(category="card",
+owner_fields=["cvv"])`. Same rules.
 
 ## Do not
 
 - Do not print, log, commit, or persist secret values — the redactor is
   a backstop, not permission.
+- Do not ask a person to paste a card number, CVV, PIN, or key into chat;
+  use `--owner-fields`. Do not snapshot or screenshot a form after
+  `browser fill` put card values in it.
 - Do not use `--reveal` when `exec`/`ssh`/`otp exec` can do the job.
 - Do not put secret values in `--reason` or any argv.
 - Do not retry a denied request (exit 3) with a different reason to

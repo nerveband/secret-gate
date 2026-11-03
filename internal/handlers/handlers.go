@@ -127,10 +127,12 @@ type FieldsPayload struct {
 
 // FieldsResponse contains field and attachment metadata
 type FieldsResponse struct {
-	SecretName string                `json:"secret_name"`
-	VaultName  string                `json:"vault_name"`
-	Fields     []opconnect.FieldInfo `json:"fields"`
-	Files      []opconnect.FileInfo  `json:"files,omitempty"`
+	SecretName string                 `json:"secret_name"`
+	VaultName  string                 `json:"vault_name"`
+	Category   string                 `json:"category,omitempty"`
+	Fields     []opconnect.FieldInfo  `json:"fields"`
+	Files      []opconnect.FileInfo   `json:"files,omitempty"`
+	Card       *opconnect.CardSummary `json:"card,omitempty"`
 }
 
 // BatchRequestPayload is the JSON body for batch secret requests
@@ -222,6 +224,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	for i := range secrets {
 		secrets[i].Attachments = nil // server-filled only
 	}
+	sensitiveRead := false
 	if len(mutations) == 0 {
 		for i := range secrets {
 			meta, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
@@ -237,6 +240,15 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			secrets[i].Attachments = attachments
+			secrets[i].Summary = meta.Card.String()
+			if opconnect.ProcessOnlyFieldRequested(meta, secrets[i].Fields) {
+				sensitiveRead = true
+			}
+		}
+		if sensitiveRead && strings.TrimSpace(payload.Context.Purpose) == "" {
+			h.writeError(w, http.StatusUnprocessableEntity, "validation",
+				"Reading a card number, CVV, or PIN needs a purpose that names where it is used, such as \"aa.com checkout\" (request submit --purpose). Upgrade older clients.")
+			return
 		}
 	}
 
@@ -268,6 +280,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Context = payload.Context
 	req.Mutations = mutations
+	req.Sensitive = sensitiveRead
 
 	if req.IsWrite() {
 		req.Action = "write"
@@ -284,8 +297,10 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, status, capability.Code, capability.Message)
 			return
 		}
-		for _, m := range req.Mutations {
-			if precheckErr := h.opClient.PrecheckMutation(req.Vault, m.Item, m.Operation, m.Category, m.Fields); precheckErr != nil {
+		for i := range req.Mutations {
+			m := &req.Mutations[i]
+			target, precheckErr := h.opClient.PrecheckMutation(req.Vault, m.Item, m.Operation, m.Category, m.Fields, m.OwnerFields)
+			if precheckErr != nil {
 				var verr *opconnect.ValidationError
 				if errors.As(precheckErr, &verr) {
 					message := verr.Message
@@ -298,17 +313,31 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				h.writeError(w, http.StatusServiceUnavailable, "write_capability_unverified", "Could not verify the item against 1Password Connect before requesting approval.")
 				return
 			}
+			m.TargetCategory = target
+			if opconnect.SensitiveWriteCategory(target) || len(m.OwnerFields) > 0 {
+				req.Sensitive = true
+			}
 		}
 		if status, code, msg := h.precheckFiles(req); status != 0 {
 			h.writeError(w, status, code, msg)
 			return
+		}
+		if req.AwaitingOwner() {
+			token, err := randomToken()
+			if err != nil {
+				h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create request")
+				return
+			}
+			req.EntryToken = token
+			req.EntryURL = strings.TrimRight(h.config.WebhookBaseURL, "/") + "/entry/" + token
 		}
 	}
 	req.Fingerprint = fingerprintRequest(req)
 
 	// Reads may ride on the global read window. Writes never do: they need a
 	// tap, a write window for this requester and vault, or a follow-up grant.
-	if session, ok := h.sessions.Match(); ok && !req.IsWrite() {
+	// Card reads and card or bank account writes always need a tap on this request.
+	if session, ok := h.sessions.Match(); ok && !req.IsWrite() && !req.Sensitive {
 		req.Approve()
 		if err := h.store.Save(req); err != nil {
 			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
@@ -406,8 +435,9 @@ func normalizeWrites(payload BatchRequestPayload, secrets []models.SecretRequest
 		return secrets, nil, ""
 	}
 	for i := range mutations {
-		if len(mutations[i].Fields) == 0 && len(mutations[i].Files) == 0 {
-			return nil, nil, "every write needs at least one field or file"
+		mutations[i].TargetCategory = "" // server-filled only
+		if len(mutations[i].Fields) == 0 && len(mutations[i].Files) == 0 && len(mutations[i].OwnerFields) == 0 {
+			return nil, nil, "every write needs at least one field, file, or owner field"
 		}
 		switch mutations[i].Operation {
 		case "create":
@@ -535,6 +565,9 @@ func (h *Handler) windowTTL(req *models.ApprovalRequest) time.Duration {
 // covers every write in it. The Telegram audit message must be delivered
 // first: if it fails, the write falls back to a normal approval request.
 func (h *Handler) autoApproveWrite(w http.ResponseWriter, req *models.ApprovalRequest) bool {
+	if req.Sensitive {
+		return false // card and bank account writes, and owner entry, need a tap
+	}
 	match, ok := h.grants.Match(writegrant.ScopeOf(req), req.Mutations)
 	if !ok {
 		return false
@@ -819,6 +852,9 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 						filtered[actual] = val
 					}
 				}
+				if marker, ok := allFields[models.ProcessOnlyKey]; ok {
+					filtered[models.ProcessOnlyKey] = marker
+				}
 				result[actualName] = filtered
 			} else {
 				result[actualName] = allFields
@@ -1092,6 +1128,14 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 		return
 	}
 
+	if req.AwaitingOwner() && action != "deny" {
+		h.answerCallback(callbackID, "Enter the values on the linked page to approve this write")
+		return
+	}
+	if req.Sensitive && (action == "approve_window" || action == "approve_writes") {
+		h.answerCallback(callbackID, "Card requests are approved one at a time")
+		return
+	}
 	fromPushWard := callbackID == "" && approver == "pushward"
 	switch action {
 	case "approve":
@@ -1480,8 +1524,10 @@ func (h *Handler) HandleFields(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, FieldsResponse{
 		SecretName: meta.Title,
 		VaultName:  meta.Vault,
+		Category:   meta.Category,
 		Fields:     meta.Fields,
 		Files:      meta.Files,
+		Card:       meta.Card,
 	})
 }
 
@@ -1574,7 +1620,8 @@ func OpenAPISpec() string {
                       "model": {"type": "string"},
                       "think": {"type": "string"},
                       "project": {"type": "string"},
-                      "task": {"type": "string"}
+                      "task": {"type": "string"},
+                      "purpose": {"type": "string", "description": "Where the value is used, such as aa.com checkout. Required to read a card number, CVV, or PIN."}
                     }
                   },
                   "mutation": {
@@ -1583,8 +1630,9 @@ func OpenAPISpec() string {
                     "required": ["operation"],
                     "properties": {
                       "operation": {"type": "string", "enum": ["create", "update"]},
-                      "category": {"type": "string", "description": "1Password category for a new item. Defaults to SECURE_NOTE."},
+                      "category": {"type": "string", "description": "1Password category for a new item: card, api, note, login, password, or a native category. Defaults to SECURE_NOTE."},
                       "fields": {"type": "object", "additionalProperties": {"type": "string"}},
+                      "owner_fields": {"type": "array", "items": {"type": "string"}, "description": "Labels the approver types on the entry page linked from Telegram; submitting that page approves the write."},
                       "files": {"type": "array", "description": "Files to attach (needs a 1Password service account on the server; at most 10 MiB per request). Telegram shows names and sizes only.", "items": {"type": "object", "required": ["name", "content"], "properties": {"name": {"type": "string"}, "content": {"type": "string", "format": "byte"}}}}
                     }
                   },
@@ -1600,6 +1648,7 @@ func OpenAPISpec() string {
                         "operation": {"type": "string", "enum": ["create", "update"]},
                         "category": {"type": "string"},
                         "fields": {"type": "object", "additionalProperties": {"type": "string"}},
+                        "owner_fields": {"type": "array", "items": {"type": "string"}},
                         "files": {"type": "array", "items": {"type": "object", "required": ["name", "content"], "properties": {"name": {"type": "string"}, "content": {"type": "string", "format": "byte"}}}}
                       }
                     }

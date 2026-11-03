@@ -64,9 +64,12 @@ type AsyncProxyClient interface {
 type ItemWrite struct {
 	Item      string            `json:"item"`
 	Operation string            `json:"operation"`
-	Category  string            `json:"category,omitempty"`
+	Category  string            `json:"category,omitempty" jsonschema:"1Password category: card, api, note, login, password (or the native name such as CREDIT_CARD)"`
 	Fields    map[string]string `json:"fields"`
 	Files     []FileWrite       `json:"files,omitempty" jsonschema:"local files to attach to the item"`
+	// OwnerFields are labels the approver types on the entry page linked
+	// from Telegram, so values the agent does not have never pass through it.
+	OwnerFields []string `json:"owner_fields,omitempty" jsonschema:"field labels the approver types on their own device (for example cvv); the agent never sees these values"`
 }
 
 // FileWrite is a local file to attach. Path is read by the client; only the
@@ -104,14 +107,24 @@ type SearchResultItem struct {
 	MatchType  string  `json:"match_type"`
 }
 
-// FieldInfo holds field metadata (name and type, no values).
+// FieldInfo holds field metadata (name and type, no values). ProcessOnly
+// fields (card number, CVV, PIN) reach commands and browser fields only.
 type FieldInfo struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Type      string `json:"type"`
-	Purpose   string `json:"purpose,omitempty"`
-	Section   string `json:"section,omitempty"`
-	Reference string `json:"reference,omitempty"`
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Purpose     string `json:"purpose,omitempty"`
+	Section     string `json:"section,omitempty"`
+	Reference   string `json:"reference,omitempty"`
+	ProcessOnly bool   `json:"process_only,omitempty"`
+}
+
+// CardInfo is the masked view of a credit card: network, last four digits,
+// and expiry. It is returned without approval.
+type CardInfo struct {
+	Type   string `json:"type,omitempty"`
+	Last4  string `json:"last4,omitempty"`
+	Expiry string `json:"expiry,omitempty"`
 }
 
 // RequestContext describes the requesting agent for the Telegram approver.
@@ -123,6 +136,7 @@ type RequestContext struct {
 	Project      string `json:"project,omitempty" jsonschema:"project or repository name"`
 	Task         string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
 	PaseoAgentID string `json:"paseo_agent_id,omitempty" jsonschema:"optional Paseo agent ID for push activation"`
+	Purpose      string `json:"purpose,omitempty" jsonschema:"where the value is used, such as aa.com checkout; required to read a card number, CVV, or PIN"`
 }
 
 // AttachmentInfo is attachment metadata: name, size, and ID, never content.
@@ -137,6 +151,8 @@ type AttachmentInfo struct {
 type FieldsResult struct {
 	SecretName string           `json:"secret_name"`
 	VaultName  string           `json:"vault_name"`
+	Category   string           `json:"category,omitempty"`
+	Card       *CardInfo        `json:"card,omitempty"`
 	Fields     []FieldInfo      `json:"fields"`
 	Files      []AttachmentInfo `json:"files,omitempty"`
 }

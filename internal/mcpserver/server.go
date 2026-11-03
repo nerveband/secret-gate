@@ -72,14 +72,25 @@ type WriteItemsInput struct {
 }
 
 type WriteItemInput struct {
-	SecretName string            `json:"secret_name" jsonschema:"item title"`
-	Vault      string            `json:"vault" jsonschema:"explicit vault name or ID"`
-	Operation  string            `json:"operation" jsonschema:"create or update"`
-	Category   string            `json:"category,omitempty" jsonschema:"1Password category for new items; defaults to SECURE_NOTE"`
-	Fields     map[string]string `json:"fields" jsonschema:"field labels mapped to values to store"`
-	Files      []core.FileWrite  `json:"files,omitempty" jsonschema:"local files to attach"`
-	Reason     string            `json:"reason" jsonschema:"why this write is needed"`
-	Context    RequestContext    `json:"context,omitempty"`
+	SecretName  string            `json:"secret_name" jsonschema:"item title"`
+	Vault       string            `json:"vault" jsonschema:"explicit vault name or ID"`
+	Operation   string            `json:"operation" jsonschema:"create or update"`
+	Category    string            `json:"category,omitempty" jsonschema:"category for new items: card, api, note, login, password, or a native 1Password category; defaults to SECURE_NOTE"`
+	Fields      map[string]string `json:"fields" jsonschema:"field labels mapped to values to store (cards: cardholder, number, cvv, expiry, type, billing_address, zip; api: credential, username, hostname, expires, scopes)"`
+	Files       []core.FileWrite  `json:"files,omitempty" jsonschema:"local files to attach"`
+	OwnerFields []string          `json:"owner_fields,omitempty" jsonschema:"field labels the approver types on their own device from the Telegram link (for example cvv); the agent never sees them"`
+	Reason      string            `json:"reason" jsonschema:"why this write is needed"`
+	Context     RequestContext    `json:"context,omitempty"`
+}
+
+type BrowserFillInput struct {
+	SecretName string          `json:"secret_name" jsonschema:"approved, cached item"`
+	Vault      string          `json:"vault,omitempty" jsonschema:"vault name"`
+	CDP        string          `json:"cdp" jsonschema:"DevTools endpoint on this machine (ws:// URL, http://host:port, or port)"`
+	PageURL    string          `json:"page_url,omitempty" jsonschema:"substring of the tab URL"`
+	TargetID   string          `json:"target_id,omitempty" jsonschema:"DevTools target ID of the tab"`
+	FrameURL   string          `json:"frame_url,omitempty" jsonschema:"substring of a cross-origin iframe URL (payment iframes)"`
+	Fields     []core.FillSpec `json:"fields" jsonschema:"fields to type: item field, optional expiry format, CSS selector"`
 }
 
 type AttachFileInput struct {
@@ -257,6 +268,18 @@ func New(cfg Config, dc FullDaemonClient, pc ProxyClient) *mcp.Server {
 		return handlePasskeyRelease(ctx, dc, pc, input)
 	})
 
+	mcp.AddTool(server, &mcp.Tool{Name: "browser_fill", Description: "Type approved, cached values (card number, CVV, expiry, login) into form fields of a browser tab over a loopback Chrome DevTools endpoint (agent-browser get cdp-url). Approve first with request_secret (cards need context.purpose, such as \"aa.com checkout\"). Values never enter model context; card values only go to https pages. Do not snapshot or screenshot the page afterwards."}, func(ctx context.Context, req *mcp.CallToolRequest, input BrowserFillInput) (*mcp.CallToolResult, core.BrowserFillOutcome, error) {
+		out, err := svc(dc, nil, Config{}).BrowserFill(ctx, core.BrowserFillRequest{
+			SecretName: input.SecretName, Vault: input.Vault,
+			Target:   core.PasskeyTarget{Endpoint: input.CDP, PageURL: input.PageURL, TargetID: input.TargetID},
+			FrameURL: input.FrameURL, Fields: input.Fields,
+		})
+		if err != nil {
+			return coreError(err), core.BrowserFillOutcome{}, nil
+		}
+		return nil, *out, nil
+	})
+
 	mcp.AddTool(server, &mcp.Tool{Name: "get_otp", Description: "Generate the current MFA/OTP/TOTP/2FA code from a previously approved 1Password OTP field. These terms are interchangeable."}, func(ctx context.Context, req *mcp.CallToolRequest, input GetOTPInput) (*mcp.CallToolResult, GetOTPOutput, error) {
 		return handleGetOTP(ctx, dc, input)
 	})
@@ -387,9 +410,9 @@ func handleWriteItem(ctx context.Context, pc ProxyClient, input WriteItemInput) 
 	s := svc(nil, pc, Config{})
 	var out *RequestResult
 	var err error
-	if len(input.Files) > 0 {
+	if len(input.Files) > 0 || len(input.OwnerFields) > 0 {
 		out, err = s.WriteItems(ctx, input.Vault, input.Reason, []core.ItemWrite{{
-			Item: input.SecretName, Operation: input.Operation, Category: input.Category, Fields: input.Fields, Files: input.Files,
+			Item: input.SecretName, Operation: input.Operation, Category: input.Category, Fields: input.Fields, Files: input.Files, OwnerFields: input.OwnerFields,
 		}}, input.Context)
 	} else {
 		out, err = s.Write(ctx, input.SecretName, input.Vault, input.Reason, input.Operation, input.Category, input.Fields, input.Context)

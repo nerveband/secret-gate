@@ -16,13 +16,35 @@ import (
 
 func init() {
 	const writeUsage = `Usage: secret-gate write %[1]s --item <name> --vault <vault> --reason <why> --stdin
-                          [--category SECURE_NOTE] [--no-wait] [--dry-run]
+                          [--category card|api|note|login|password] [--owner-fields a,b]
+                          [--no-wait] [--dry-run]
 
 %[2]s a 1Password item after Telegram approval. Field values are read
 from stdin as JSON (value-input class — values never appear in argv):
 
   echo '{"category":"API_CREDENTIAL","fields":{"credential":"<value>"}}' \
     | secret-gate write %[1]s --item "ci-token" --vault "Infra" --reason "store the new CI token" --stdin
+
+Typed items use the native 1Password category, so they look right in the
+1Password app. Friendly labels map onto native fields:
+  card (CREDIT_CARD): cardholder, number, cvv, expiry (MM/YY), type, pin,
+                      bank, billing_address, city, state, zip, country
+  api (API_CREDENTIAL): credential (key/secret/token), username (key id),
+                      hostname (host/base_url), expires (YYYY-MM-DD), scopes
+  note (SECURE_NOTE): note;  login: username, password, url;  password: password
+Card numbers are checked (Luhn) and the card type is detected when omitted.
+
+Values the agent does not have (a CVV only the owner knows) are typed by
+the approver: --owner-fields cvv sends Telegram an "Enter values" link to a
+page on the approval device; saving it approves the write. --stdin is then
+optional (pipe only the fields you have):
+
+  echo '{"fields":{"cardholder":"A. Ali","billing_address":"<street>","zip":"<zip>"}}' \
+    | secret-gate write %[1]s --item "Visa travel" --vault "AI Agents" --category card \
+      --owner-fields number,cvv,expiry --reason "store the travel card" --stdin
+
+Card and bank account writes, and writes with owner fields, always need a
+tap on that request; write windows and follow-ups never cover them.
 
 Use --no-wait to hand the pending write to the local daemon and return a
 token at once (resume with: secret-gate request wait <token>). The server
@@ -49,14 +71,16 @@ Items are read from stdin as JSON (value-input class):
     | secret-gate write batch --vault "AI Agents" --reason "store release credentials" --stdin
 
 Each item may appear once; merge fields for one item into one entry. Items
-may carry "files":[{"path":"./cert.p12","name":"cert.p12"}] to attach.`
+may carry "files":[{"path":"./cert.p12","name":"cert.p12"}] to attach and
+"owner_fields":["cvv"] for values the approver types on the entry page.`
 }
 
 // stdinWritePayload is the JSON document accepted on stdin.
 type stdinWritePayload struct {
-	Category string            `json:"category"`
-	Fields   map[string]string `json:"fields"`
-	Files    []core.FileWrite  `json:"files"`
+	Category    string            `json:"category"`
+	Fields      map[string]string `json:"fields"`
+	Files       []core.FileWrite  `json:"files"`
+	OwnerFields []string          `json:"owner_fields"`
 }
 
 type stdinBatchPayload struct {
@@ -77,10 +101,11 @@ func (a *App) runWrite(args []string) int {
 	command := "write " + op
 
 	fs := a.newFlagSet(command)
-	var item, category *string
+	var item, category, ownerCSV *string
 	if op != "batch" {
 		item = fs.String("item", "", "item title")
-		category = fs.String("category", "", "1Password category for new items (default SECURE_NOTE)")
+		category = fs.String("category", "", "1Password category for new items: card, api, note, login, password, or a native name (default SECURE_NOTE)")
+		ownerCSV = fs.String("owner-fields", "", "comma-separated labels the approver types on the Telegram-linked entry page (e.g. cvv)")
 	}
 	vault := fs.String("vault", "", "explicit vault name or ID")
 	reason := fs.String("reason", "", "why this write is needed (shown to the approver)")
@@ -97,15 +122,27 @@ func (a *App) runWrite(args []string) int {
 		return a.fail(command, "usage", "item, vault, and reason are required",
 			"pass --item <name> --vault <vault> --reason <why>")
 	}
-	if !*stdin {
+	var owner []string
+	if ownerCSV != nil {
+		for _, f := range strings.Split(*ownerCSV, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				owner = append(owner, f)
+			}
+		}
+	}
+	if !*stdin && len(owner) == 0 {
 		return a.fail(command, "usage",
 			"field values must arrive via stdin (value-input class), never argv",
-			`pipe JSON and pass --stdin: echo '{"fields":{"label":"value"}}' | secret-gate `+command+` --vault ... --stdin`)
+			`pipe JSON and pass --stdin: echo '{"fields":{"label":"value"}}' | secret-gate `+command+` --vault ... --stdin, or let the approver type them with --owner-fields`)
 	}
 
-	raw, err := io.ReadAll(a.Stdin)
-	if err != nil {
-		return a.fail(command, "usage", "failed to read stdin: "+err.Error(), "")
+	var raw []byte
+	if *stdin {
+		var err error
+		raw, err = io.ReadAll(a.Stdin)
+		if err != nil {
+			return a.fail(command, "usage", "failed to read stdin: "+err.Error(), "")
+		}
 	}
 	var items []core.ItemWrite
 	if op == "batch" {
@@ -121,11 +158,14 @@ func (a *App) runWrite(args []string) int {
 		items = payload.Items
 	} else {
 		var payload stdinWritePayload
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			return a.fail(command, "usage", "stdin is not valid JSON: "+err.Error(),
-				`expected: {"category":"SECURE_NOTE","fields":{"label":"value"}}`)
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				return a.fail(command, "usage", "stdin is not valid JSON: "+err.Error(),
+					`expected: {"category":"SECURE_NOTE","fields":{"label":"value"}}`)
+			}
 		}
-		if len(payload.Fields) == 0 && len(payload.Files) == 0 {
+		owner = append(owner, payload.OwnerFields...)
+		if len(payload.Fields) == 0 && len(payload.Files) == 0 && len(owner) == 0 {
 			return a.fail(command, "usage", "stdin JSON must contain a non-empty \"fields\" object or \"files\" list",
 				`expected: {"fields":{"label":"value"}} or {"files":[{"path":"./file"}]}`)
 		}
@@ -133,7 +173,7 @@ func (a *App) runWrite(args []string) int {
 		if cat == "" {
 			cat = payload.Category
 		}
-		items = []core.ItemWrite{{Item: *item, Operation: op, Category: cat, Fields: payload.Fields, Files: payload.Files}}
+		items = []core.ItemWrite{{Item: *item, Operation: op, Category: cat, Fields: payload.Fields, Files: payload.Files, OwnerFields: owner}}
 	}
 
 	if *dryRun {
@@ -145,7 +185,8 @@ func (a *App) runWrite(args []string) int {
 	}
 
 	var out *core.RequestResult
-	if op == "batch" || len(items[0].Files) > 0 {
+	var err error
+	if op == "batch" || len(items[0].Files) > 0 || len(items[0].OwnerFields) > 0 {
 		out, err = a.Service.WriteItems(context.Background(), *vault, *reason, items, core.RequestContext{})
 	} else {
 		it := items[0]
@@ -184,6 +225,9 @@ func writePreview(op, vault string, items []core.ItemWrite) map[string]interface
 				files = append(files, name)
 			}
 			entry["files"] = files
+		}
+		if len(it.OwnerFields) > 0 {
+			entry["owner_fields"] = it.OwnerFields
 		}
 		preview = append(preview, entry)
 	}

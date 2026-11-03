@@ -25,7 +25,20 @@ type SecretRequest struct {
 	// Attachments is filled by the server from the item for every "file:"
 	// selector in Fields, so Telegram can show names and sizes.
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Summary is filled by the server with a masked description of a card
+	// ("Mastercard ending 1100, expires 08/2027"). It never holds a value
+	// that needs approval.
+	Summary string `json:"summary,omitempty"`
 }
+
+// ProcessOnlyKey is a reserved key the server adds to released item values.
+// Its value lists, comma-separated, the keys whose values may reach a child
+// process or a browser field but never model context (card number, CVV, PIN).
+const ProcessOnlyKey = "_secret_gate.process_only"
+
+// SensitiveCacheTTL caps how long the local daemon keeps an item that has
+// process-only values, so one card approval covers one checkout, not a day.
+const SensitiveCacheTTL = 15 * time.Minute
 
 // AttachmentPrefix marks a field selector that names an item attachment
 // ("file:<name or id>"). Attachments are released only when named this way.
@@ -60,6 +73,9 @@ type RequestContext struct {
 	Project      string `json:"project,omitempty"`
 	Task         string `json:"task,omitempty"`
 	PaseoAgentID string `json:"paseo_agent_id,omitempty"`
+	// Purpose names where a value will be used ("aa.com checkout"). Card
+	// reads require it; the approver sees it next to the masked card.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // ItemMutation is an approved write to a 1Password item. Values remain only in
@@ -71,16 +87,41 @@ type ItemMutation struct {
 	Category  string            `json:"category,omitempty"`
 	Fields    map[string]string `json:"fields"`
 	Files     []FileUpload      `json:"files,omitempty"`
+	// OwnerFields are labels the approver types on the approval device
+	// (the entry page linked from Telegram) instead of the agent sending them.
+	OwnerFields []string `json:"owner_fields,omitempty"`
+	// TargetCategory is filled by the server: the category of the item that
+	// is created, or of the existing item that is updated.
+	TargetCategory string `json:"target_category,omitempty"`
 }
 
-// Labels returns the mutation's field labels, sorted. Values are never included.
+// Labels returns the mutation's field labels, including owner-entered
+// ones, sorted and unique. Values are never included.
 func (m ItemMutation) Labels() []string {
-	labels := make([]string, 0, len(m.Fields))
+	labels := make([]string, 0, len(m.Fields)+len(m.OwnerFields))
 	for label := range m.Fields {
 		labels = append(labels, label)
 	}
+	for _, label := range m.OwnerFields {
+		if _, ok := m.Fields[label]; !ok {
+			labels = append(labels, label)
+		}
+	}
 	sort.Strings(labels)
 	return labels
+}
+
+// AwaitingOwner reports whether the approver still has to enter values on
+// the entry page before this write can be approved.
+func (r *ApprovalRequest) AwaitingOwner() bool {
+	for _, m := range r.Mutations {
+		for _, label := range m.OwnerFields {
+			if m.Fields[label] == "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Approval sources recorded on writes that no human tapped individually.
@@ -122,6 +163,16 @@ type ApprovalRequest struct {
 	WriteWindowID     string     `json:"write_window_id,omitempty"` // window that approved or was opened by this request
 	RemindedAt        *time.Time `json:"reminded_at,omitempty"`
 	ExpiryNotified    bool       `json:"expiry_notified,omitempty"`
+	// Sensitive marks card reads that release a card number, CVV, or PIN,
+	// writes to card or bank account items, and writes with owner fields.
+	// They need a tap on this request: read windows, write windows, and
+	// follow-ups never cover them.
+	Sensitive bool `json:"sensitive,omitempty"`
+	// EntryToken opens the owner entry page for OwnerFields; EntryURL is the
+	// full link. Both go only to Telegram and the authenticated Approver
+	// API, never to the requesting agent.
+	EntryToken string `json:"-"`
+	EntryURL   string `json:"-"`
 }
 
 // IsWrite reports whether the request creates or updates 1Password items.

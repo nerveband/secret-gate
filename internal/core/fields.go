@@ -3,6 +3,8 @@ package core
 import (
 	"sort"
 	"strings"
+
+	"github.com/johnuopini/secret-gate/internal/models"
 )
 
 // OTPFieldKeyPrefix marks the key of a 1Password OTP-type field. Fields keep
@@ -62,12 +64,30 @@ func normalizeFieldName(s string) string {
 }
 
 // FieldNames returns the sorted field labels of a cached item, for use in
-// error hints. Values are never included.
+// error hints. Values and the reserved process-only marker are never included.
 func FieldNames(values map[string]string) []string {
 	names := make([]string, 0, len(values))
 	for k := range values {
-		names = append(names, k)
+		if k != ProcessOnlyKey {
+			names = append(names, k)
+		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+// ProcessOnlyKey is the reserved key under which the server lists the
+// value keys that must never enter model context (card number, CVV, PIN).
+const ProcessOnlyKey = models.ProcessOnlyKey
+
+// ProcessOnlyKeys returns the keys of values that may reach a child process
+// or a browser field but never model context.
+func ProcessOnlyKeys(values map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, k := range strings.Split(values[ProcessOnlyKey], ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			out[k] = true
+		}
+	}
+	return out
 }
