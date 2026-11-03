@@ -44,7 +44,7 @@ func TestAttachmentExecTempFileIsPrivateAndRemoved(t *testing.T) {
 	svc := attachmentService(t, "certificate body text")
 	out, err := svc.AttachmentExec(context.Background(), AttachmentExecRequest{
 		SecretName: "Release keys", File: "cert.pem", PathEnv: "CERT",
-		ShellCommand: `stat -f %Lp "$CERT" 2>/dev/null || stat -c %a "$CERT"; basename "$CERT"; echo "$CERT"; cat "$CERT"`,
+		ShellCommand: `stat -c %a "$CERT" 2>/dev/null || stat -f %Lp "$CERT"; basename "$CERT"; echo "$CERT"; cat "$CERT"`,
 	})
 	if err != nil {
 		t.Fatal(err)
