@@ -256,21 +256,24 @@ func approvalCardTitle(req *models.ApprovalRequest) string {
 }
 
 func approvalCardSummary(req *models.ApprovalRequest) string {
-	s := approvalCardTitle(req) + " in " + req.Vault
-	if card := cardSummary(req); card != "" {
-		s += " (" + card + ")"
+	if card := req.CardLine(); card != "" {
+		s := card + " (read " + firstNonEmpty(cardItemName(req), "card") + " in " + req.Vault + ")"
+		if reason := firstNonEmpty(req.Reason, req.Context.Task); reason != "" {
+			s += ": " + reason
+		}
+		return s
 	}
+	s := approvalCardTitle(req) + " in " + req.Vault
 	if reason := firstNonEmpty(req.Context.Purpose, req.Reason, req.Context.Task); reason != "" {
 		s += ": " + reason
 	}
 	return s
 }
 
-// cardSummary returns the masked card of a single-card read, if any.
-func cardSummary(req *models.ApprovalRequest) string {
+func cardItemName(req *models.ApprovalRequest) string {
 	for _, s := range req.Secrets {
 		if s.Summary != "" {
-			return s.Summary
+			return s.SecretName
 		}
 	}
 	return ""

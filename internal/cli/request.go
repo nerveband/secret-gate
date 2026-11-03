@@ -20,14 +20,15 @@ Submit a Telegram approval request. Blocks until a terminal state unless
 --no-wait is given, in which case the token is printed for later resume.
 
 --purpose names where the value is used (merchant or site). It is required
-for a card number, CVV, or PIN; the approver sees it next to the masked
-card, for example "aa.com checkout, Mastercard ending 1100". Card values
-stay cached for at most 15 minutes.
+for a card number, CVV, or PIN. --amount is the charge, with currency; give
+it for every payment. The approver sees "Approve $412.30 at aa.com
+checkout, Mastercard ending 1100" and a "✅ Approve $412.30" button. Card
+values stay cached for at most 15 minutes.
 
 Examples:
   secret-gate request submit --item "deploy-key" --reason "deploy the api service" --fields "private key"
   secret-gate request submit --item "prod-api" --reason "rotate token" --no-wait
-  secret-gate request submit --item "Visa travel" --fields number,cvv,expiry --purpose "aa.com checkout" --reason "pay for the DFW flight"`
+  secret-gate request submit --item "Visa travel" --fields number,cvv,expiry --purpose "aa.com checkout" --amount '$412.30' --reason "pay for the DFW flight"`
 
 	usageText["request status"] = `Usage: secret-gate request status <token>
 
@@ -85,6 +86,7 @@ func (a *App) requestSubmit(args []string) int {
 	pollInterval := fs.Duration("poll-interval", 5*time.Second, "interval between status polls")
 	dryRun := fs.Bool("dry-run", false, "preview the request payload without submitting")
 	purpose := fs.String("purpose", "", "where the value is used, e.g. \"aa.com checkout\" (required for card number/CVV/PIN)")
+	amount := fs.String("amount", "", "charge to approve, with currency, e.g. '$412.30' (give it for every card payment)")
 	if code, done := a.parse(fs, command, args); done {
 		return code
 	}
@@ -111,6 +113,7 @@ func (a *App) requestSubmit(args []string) int {
 			"reason":      *reason,
 			"fields":      fields,
 			"purpose":     *purpose,
+			"amount":      *amount,
 			"machine":     hostname,
 		}, &Meta{Visibility: VisibilityMetadataOnly})
 	}
@@ -135,7 +138,7 @@ func (a *App) requestSubmit(args []string) int {
 	if a.Async == nil {
 		return a.fail(command, "internal", "async proxy is not configured", "")
 	}
-	pending, err := a.Async.Submit(context.Background(), *item, *vault, *reason, fields, core.RequestContext{Purpose: strings.TrimSpace(*purpose)})
+	pending, err := a.Async.Submit(context.Background(), *item, *vault, *reason, fields, core.RequestContext{Purpose: strings.TrimSpace(*purpose), Amount: strings.TrimSpace(*amount)})
 	if err != nil {
 		return a.failErr(command, err)
 	}

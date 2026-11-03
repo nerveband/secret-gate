@@ -32,6 +32,21 @@ func TestCardReadShowsPurposeAndMaskedCardWithoutWindows(t *testing.T) {
 	}
 }
 
+func TestCardReadWithAmountAsksToApproveThatAmount(t *testing.T) {
+	req := &models.ApprovalRequest{
+		ID: "r3", Vault: "AI Agents", Action: "read", Reason: "pay for the DFW flight", Sensitive: true,
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+		Context:   models.RequestContext{Purpose: "aa.com checkout", Amount: "$412.30"},
+		Secrets:   []models.SecretRequest{{SecretName: "Visa travel", Fields: []string{"number", "cvv"}, Summary: "Visa ending 1111, expires 08/2027"}},
+	}
+	if text := approvalMessage(req); !strings.Contains(text, "Approve $412.30 at aa.com checkout, Visa ending 1111, expires 08/2027") || !strings.Contains(text, "Amount:\n<b>$412.30</b>") {
+		t.Fatalf("message = %s", text)
+	}
+	if b := approvalKeyboard(req, 0).InlineKeyboard[0][0]; b.Text != "✅ Approve $412.30" || b.CallbackData != "approve:r3" {
+		t.Fatalf("approve button = %+v", b)
+	}
+}
+
 func TestOwnerEntryWriteLinksTheEntryPageInsteadOfApprove(t *testing.T) {
 	req := &models.ApprovalRequest{
 		ID: "r2", Vault: "AI Agents", Action: "update", Reason: "add the CVV", Sensitive: true,

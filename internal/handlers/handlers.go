@@ -245,6 +245,12 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				sensitiveRead = true
 			}
 		}
+		payload.Context.Purpose = strings.TrimSpace(payload.Context.Purpose)
+		payload.Context.Amount = strings.TrimSpace(payload.Context.Amount)
+		if len(payload.Context.Purpose) > 80 || len(payload.Context.Amount) > 24 || strings.ContainsAny(payload.Context.Purpose+payload.Context.Amount, "\r\n\t") {
+			h.writeError(w, http.StatusUnprocessableEntity, "validation", "purpose must be one line of at most 80 characters and amount one line of at most 24")
+			return
+		}
 		if sensitiveRead && strings.TrimSpace(payload.Context.Purpose) == "" {
 			h.writeError(w, http.StatusUnprocessableEntity, "validation",
 				"Reading a card number, CVV, or PIN needs a purpose that names where it is used, such as \"aa.com checkout\" (request submit --purpose). Upgrade older clients.")
@@ -1293,7 +1299,9 @@ func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.Appr
 			delivered = true
 		}
 	}
-	if h.pwClient != nil {
+	// Entry-page writes are approved by submitting the page linked from
+	// Telegram; PushWard approval cards need at least two options.
+	if h.pwClient != nil && !req.AwaitingOwner() {
 		slug, err := h.pwClient.SendApprovalRequest(req, ttl)
 		if err != nil {
 			h.log.Error("Failed to send PushWard approval request", logger.F("error", err.Error(), "request_id", req.ID))
@@ -1332,7 +1340,7 @@ func (h *Handler) refreshApprovalRequest(w http.ResponseWriter, req *models.Appr
 			refreshed = true
 		}
 	}
-	if h.pwClient != nil {
+	if h.pwClient != nil && !req.AwaitingOwner() {
 		if err := h.pwClient.UpdateApprovalRequest(req.PushWardSlug, req, ttl); err != nil {
 			h.log.Error("Failed to refresh PushWard approval request", logger.F("error", err.Error(), "request_id", req.ID, "slug", req.PushWardSlug))
 		} else {

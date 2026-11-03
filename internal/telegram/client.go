@@ -190,26 +190,11 @@ func approvalMessage(req *models.ApprovalRequest) string {
 	return b.String()
 }
 
-// cardHeadline is "aa.com checkout, Mastercard ending 1100, expires 08/2027"
-// for card reads, so the approver sees where the card is used.
+// cardHeadline is "Approve $412.30 at aa.com checkout, Visa ending 1111,
+// expires 08/2027" for card reads, so the approver sees the charge and where
+// the card is used.
 func cardHeadline(req *models.ApprovalRequest) string {
-	if req.IsWrite() {
-		return ""
-	}
-	card := ""
-	for _, s := range req.Secrets {
-		if s.Summary != "" {
-			card = s.Summary
-			break
-		}
-	}
-	if card == "" {
-		return ""
-	}
-	if req.Context.Purpose == "" {
-		return card
-	}
-	return req.Context.Purpose + ", " + card
+	return req.CardLine()
 }
 
 func approvedMessage(req *models.ApprovalRequest, approver, scope string) string {
@@ -371,7 +356,11 @@ func approvalKeyboard(req *models.ApprovalRequest, windowTTL time.Duration) *Inl
 	if req.AwaitingOwner() && req.EntryURL != "" {
 		return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "✍️ Enter values", URL: req.EntryURL}}, deny}}
 	}
-	approveRow := []InlineKeyboardButton{{Text: "✅ Approve once", CallbackData: "approve:" + req.ID}}
+	approveText := "✅ Approve once"
+	if req.Context.Amount != "" && !req.IsWrite() {
+		approveText = "✅ Approve " + req.Context.Amount
+	}
+	approveRow := []InlineKeyboardButton{{Text: approveText, CallbackData: "approve:" + req.ID}}
 	switch {
 	case req.Sensitive:
 	case !req.IsWrite():
@@ -443,6 +432,9 @@ func reasonBlock(req *models.ApprovalRequest) string {
 	purpose := ""
 	if req.Context.Purpose != "" {
 		purpose = "\n\nPurpose:\n<b>" + html.EscapeString(req.Context.Purpose) + "</b>"
+	}
+	if req.Context.Amount != "" {
+		purpose += "\n\nAmount:\n<b>" + html.EscapeString(req.Context.Amount) + "</b>"
 	}
 	return purpose + "\n\nReason:\n<b>" + html.EscapeString(reason) + "</b>"
 }

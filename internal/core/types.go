@@ -137,6 +137,7 @@ type RequestContext struct {
 	Task         string `json:"task,omitempty" jsonschema:"plain-language description of what the agent will do"`
 	PaseoAgentID string `json:"paseo_agent_id,omitempty" jsonschema:"optional Paseo agent ID for push activation"`
 	Purpose      string `json:"purpose,omitempty" jsonschema:"where the value is used, such as aa.com checkout; required to read a card number, CVV, or PIN"`
+	Amount       string `json:"amount,omitempty" jsonschema:"charge the approver is asked to allow, with currency, such as $412.30; give it for every card payment"`
 }
 
 // AttachmentInfo is attachment metadata: name, size, and ID, never content.

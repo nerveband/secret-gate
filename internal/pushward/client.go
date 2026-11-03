@@ -494,7 +494,11 @@ func approvalOptions(req *models.ApprovalRequest, windowTTL time.Duration) []act
 		return []activityOption{deny}
 	}
 	if req.Sensitive {
-		return []activityOption{{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"}, deny}
+		title := "Approve"
+		if req.Context.Amount != "" && !req.IsWrite() {
+			title = truncateRunes("Approve "+req.Context.Amount, 24)
+		}
+		return []activityOption{{ID: "approve", Title: title, Style: "primary", Icon: "checkmark.circle.fill"}, deny}
 	}
 	if !req.IsWrite() {
 		return []activityOption{
@@ -629,27 +633,10 @@ func cardTitle(req *models.ApprovalRequest) string {
 }
 
 func questionState(req *models.ApprovalRequest) string {
-	if card := cardLine(req); card != "" {
+	if card := req.CardLine(); card != "" {
 		return card
 	}
 	return firstNonEmpty(req.Reason, req.Context.Task, plainActionSummary(req))
-}
-
-// cardLine is "aa.com checkout, Mastercard ending 1100, expires 08/2027".
-func cardLine(req *models.ApprovalRequest) string {
-	if req.IsWrite() {
-		return ""
-	}
-	for _, s := range req.Secrets {
-		if s.Summary == "" {
-			continue
-		}
-		if req.Context.Purpose == "" {
-			return s.Summary
-		}
-		return req.Context.Purpose + ", " + s.Summary
-	}
-	return ""
 }
 
 func sourceLabel(req *models.ApprovalRequest) string {

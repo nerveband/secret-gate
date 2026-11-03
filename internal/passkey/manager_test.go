@@ -185,8 +185,11 @@ func TestHoldExpiryReleasesTheAuthenticator(t *testing.T) {
 	if _, err := m.Arm(context.Background(), Target{Endpoint: endpoint, Hold: 50 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
+	released := func() bool {
+		return !m.Active() && strings.Contains(strings.Join(fb.log(), ","), "WebAuthn.removeVirtualAuthenticator")
+	}
 	deadline := time.Now().Add(2 * time.Second)
-	for m.Active() && time.Now().Before(deadline) {
+	for !released() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if m.Active() || !strings.Contains(strings.Join(fb.log(), ","), "WebAuthn.removeVirtualAuthenticator") {

@@ -45,15 +45,20 @@ first). Driver License and Membership follow the Identity pattern.
 ## Saving without exposing values
 
 - `--stdin` JSON, as before. Values never appear in argv, logs, or Telegram.
-- `--owner-fields a,b` (`owner_fields` in JSON / MCP): the approver types
-  these on their own device. The Telegram approval gets an "✍️ Enter values"
+  This is the normal path: a card item stores everything a checkout needs
+  (number, CVV, expiry, billing), and at checkout the agent fills all of it
+  from 1Password with one tap. Cards can also be created or completed
+  directly in the 1Password app; Secret Gate reads them the same way.
+- Fallback, rarely needed: `--owner-fields a,b` (`owner_fields` in JSON /
+  MCP) for a value no agent has. The Telegram approval gets an "✍️ Enter values"
   URL button to `WEBHOOK_BASE_URL/entry/<token>` (tailnet only on
   mac-server). The page shows item, vault, reason, requester, and one
   input per label (password inputs for number/CVV/PIN); submitting it
-  validates the values, approves the write, and closes the PushWard Live
-  Activity. `Approve once` is not offered and refused until values are
-  entered; `Deny` still works. The agent never holds the values, so this is
-  how a CVV gets into Secret Gate. `--stdin` is optional with owner fields.
+  validates the values and approves the write. These requests get no
+  PushWard Live Activity. `Approve once` is not offered and refused until
+  values are entered; `Deny` still works. The skill does not send agents
+  here: when a card lacks a field, the agent says which one is missing from
+  1Password. `--stdin` is optional with owner fields.
   The token is 256 random bits, single use, and expires with the request
   (`WRITE_REQUEST_TTL`, 1h). It is never returned to the agent; it is in the
   Telegram button and the authenticated Approver API (`entry_url`). The page
@@ -66,7 +71,7 @@ first). Driver License and Membership follow the Identity pattern.
 
 | Request | Needs |
 |---|---|
-| Card read that releases number, CVV, or PIN (or all fields) | `--purpose`, then a tap on that request. Read windows never cover it and none is offered. |
+| Card read that releases number, CVV, or PIN (or all fields) | `--purpose` (and `--amount` for payments: "Approve $412.30 at aa.com checkout, Visa ending 1111"), then a tap on that request. Read windows never cover it and none is offered. |
 | Card read of other fields (expiry, cardholder, billing) | Normal read rules |
 | Card or bank account write | A tap on that request. Write windows and follow-ups never cover it; `Approve + writes` is not offered. Batches still work: several cards in one `write batch` need one tap. |
 | Write with owner fields | Submitting the entry page |

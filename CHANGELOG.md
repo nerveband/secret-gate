@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.1 (2026-11-03)
+
+### Added
+- `request submit --amount '$412.30'` (`context.amount` in MCP). Card approvals read "Approve $412.30 at aa.com checkout, Visa ending 1111, expires 08/2027", with an "Approve $412.30" button in Telegram and PushWard. Purpose and amount are limited to one line (80 and 24 characters).
+
+### Fixed
+- Skill: card items carry the CVV and agents fill it at checkout; agents no longer send the owner to the entry page for a CVV, and say which field is missing from 1Password instead.
+- PushWard rejected the Live Activity of entry-page writes (one option; approval cards need two to four). Those requests now skip PushWard; the Telegram link approves them.
+- The attachment temp-file test failed on Linux CI since v0.7.0 (`stat -f` means filesystem stat there); it now tries GNU `stat` first.
+
 ## v0.8.0 (2026-11-03)
 
 Typed items: credit cards, API credentials, and secure notes in their native 1Password categories, with card numbers and CVVs kept out of model context. Design and threat model: [docs/typed-items.md](docs/typed-items.md).

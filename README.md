@@ -231,14 +231,14 @@ and saving that page on the phone approves the write.
 secret-gate item fields --item "Visa travel"          # masked: type, last 4, expiry; no approval
 secret-gate write update --item "Visa travel" --vault "AI Agents" --owner-fields cvv --reason "add the CVV" --no-wait
 secret-gate request submit --item "Visa travel" --fields number,cvv,expiry,cardholder \
-  --purpose "aa.com checkout" --reason "pay for the DFW flight"
+  --purpose "aa.com checkout" --amount '$412.30' --reason "pay for the DFW flight"
 secret-gate browser fill --item "Visa travel" --cdp "$(agent-browser get cdp-url)" --page-url aa.com \
   --field 'number=#cardNumber' --field 'cvv=#cvv' --field 'expiry:MM/YY=#exp'
 ```
 
 Card numbers, CVVs, and PINs are process-only: `exec` and `browser fill`
 use them, `item read` and `read_item_fields` never return them. Reading them
-needs `--purpose`, shown in Telegram as "aa.com checkout, Visa ending 1111";
+needs `--purpose`; with `--amount` Telegram shows "Approve $412.30 at aa.com checkout, Visa ending 1111" and an "Approve $412.30" button;
 card reads and card writes always need a tap on that request (no read or
 write windows), and card values stay cached for at most 15 minutes. See
 [docs/typed-items.md](docs/typed-items.md).

@@ -76,6 +76,40 @@ type RequestContext struct {
 	// Purpose names where a value will be used ("aa.com checkout"). Card
 	// reads require it; the approver sees it next to the masked card.
 	Purpose string `json:"purpose,omitempty"`
+	// Amount is the charge the approver is asked to allow ("$412.30").
+	Amount string `json:"amount,omitempty"`
+}
+
+// CardLine is the approver-facing line of a card read:
+// "Approve $412.30 at aa.com checkout, Visa ending 1111, expires 08/2027",
+// or "aa.com checkout, Visa ending 1111, ..." without an amount. It is
+// empty for requests that do not read a card.
+func (r *ApprovalRequest) CardLine() string {
+	if r.IsWrite() {
+		return ""
+	}
+	card := ""
+	for _, s := range r.Secrets {
+		if s.Summary != "" {
+			card = s.Summary
+			break
+		}
+	}
+	if card == "" {
+		return ""
+	}
+	line := card
+	if r.Context.Purpose != "" {
+		line = r.Context.Purpose + ", " + card
+	}
+	if r.Context.Amount != "" {
+		at := r.Context.Purpose
+		if at == "" {
+			return "Approve " + r.Context.Amount + ", " + card
+		}
+		return "Approve " + r.Context.Amount + " at " + at + ", " + card
+	}
+	return line
 }
 
 // ItemMutation is an approved write to a 1Password item. Values remain only in
