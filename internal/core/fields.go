@@ -21,11 +21,16 @@ const OTPFieldKeyPrefix = "TOTP_"
 // field; with several, resolution fails and OTPFieldIDs lists them.
 //
 // When several keys match (a login's password field next to a saved
-// web-form "Password" field), a non-empty value beats an empty one, then
-// the field with the matching 1Password purpose (PASSWORD, USERNAME, NOTES)
-// wins, a CONCEALED field wins for "password", and an exact key wins.
-// Matches that still disagree fail; FieldAmbiguity names them.
+// web-form "Password" field), a non-empty value beats an empty one, then the
+// exact key wins, then the field with the matching 1Password purpose
+// (PASSWORD, USERNAME, NOTES), then a CONCEALED field for "password".
+// Matches that still disagree fail; FieldAmbiguity names them. A name the
+// server listed as an alternative of a cached field resolves only once that
+// field itself is cached, so asking for it never returns the other field.
 func ResolveField(values map[string]string, wanted string) (string, string, bool) {
+	if _, cached := values[wanted]; !cached && namedAlternative(values, wanted) {
+		return "", "", false
+	}
 	matches, otpAlias := fieldMatches(values, wanted)
 	if key, _, ok := pickField(values, wanted, matches); ok {
 		return key, values[key], true
@@ -38,6 +43,57 @@ func ResolveField(values map[string]string, wanted string) (string, string, bool
 	return "", "", false
 }
 
+// FieldAlternatives returns the selectors of other fields that match wanted
+// (by key or label) with a different, non-empty value than the resolved
+// key actual, plus those the server listed when it released actual. An
+// agent whose login fails with one value can request an alternative and
+// retry. Only names are returned.
+func FieldAlternatives(values map[string]string, wanted, actual string) []string {
+	meta := FieldMeta(values)
+	aliases, _ := fieldAliases(wanted)
+	seen := map[string]bool{selectorOf(meta, actual): true}
+	var out []string
+	add := func(s string) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range meta[actual].Alternatives {
+		add(s)
+	}
+	for k, v := range values {
+		if models.IsReservedKey(k) || v == "" || v == values[actual] {
+			continue
+		}
+		if aliases[normalizeFieldName(k)] || (meta[k].Label != "" && aliases[normalizeFieldName(meta[k].Label)]) {
+			add(selectorOf(meta, k))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func selectorOf(meta map[string]models.FieldMeta, key string) string {
+	if s := meta[key].Selector; s != "" {
+		return s
+	}
+	return key
+}
+
+// namedAlternative reports whether the server listed wanted as an
+// alternative of a released field.
+func namedAlternative(values map[string]string, wanted string) bool {
+	for _, m := range FieldMeta(values) {
+		for _, s := range m.Alternatives {
+			if s == wanted {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // FieldAmbiguity reports a name that matches several fields with different
 // values, or an OTP alias that matches several unlabeled OTP fields. It
 // returns nil when the name is unknown or resolves.
@@ -45,7 +101,7 @@ func FieldAmbiguity(values map[string]string, wanted string) error {
 	matches, otpAlias := fieldMatches(values, wanted)
 	if _, left, ok := pickField(values, wanted, matches); !ok && len(left) > 1 {
 		return E(ErrValidation, fmt.Sprintf("%q matches several fields with different values: %s", wanted, strings.Join(left, ", ")),
-			"pass --field with the field ID or section-qualified label (section.label) from: secret-gate item fields")
+			"pass --field with one of the listed names, or a selector from: secret-gate item fields")
 	}
 	if len(matches) == 0 && otpAlias {
 		if ids := OTPFieldIDs(values); len(ids) > 1 {
@@ -56,9 +112,9 @@ func FieldAmbiguity(values map[string]string, wanted string) error {
 	return nil
 }
 
-// fieldMatches returns the non-reserved keys whose normalized name matches
-// wanted or one of its aliases, and whether wanted is an OTP alias.
-func fieldMatches(values map[string]string, wanted string) ([]string, bool) {
+// fieldAliases returns the normalized names wanted stands for, and whether
+// wanted is an OTP alias.
+func fieldAliases(wanted string) (map[string]bool, bool) {
 	w := normalizeFieldName(wanted)
 	aliases := map[string]bool{}
 	otpAlias := false
@@ -75,6 +131,13 @@ func fieldMatches(values map[string]string, wanted string) ([]string, bool) {
 	default:
 		aliases[w] = true
 	}
+	return aliases, otpAlias
+}
+
+// fieldMatches returns the non-reserved keys whose normalized name matches
+// wanted or one of its aliases, and whether wanted is an OTP alias.
+func fieldMatches(values map[string]string, wanted string) ([]string, bool) {
+	aliases, otpAlias := fieldAliases(wanted)
 	var matches []string
 	for name := range values {
 		if !models.IsReservedKey(name) && aliases[normalizeFieldName(name)] {
@@ -93,6 +156,7 @@ func pickField(values map[string]string, wanted string, matches []string) (strin
 	}
 	meta := FieldMeta(values)
 	c := prefer(matches, func(k string) bool { return values[k] != "" })
+	c = prefer(c, func(k string) bool { return k == wanted })
 	var purpose string
 	switch normalizeFieldName(wanted) {
 	case "password":
@@ -108,7 +172,6 @@ func pickField(values map[string]string, wanted string, matches []string) (strin
 	if purpose == "PASSWORD" {
 		c = prefer(c, func(k string) bool { return strings.EqualFold(meta[k].Type, "CONCEALED") })
 	}
-	c = prefer(c, func(k string) bool { return k == wanted })
 	for _, k := range c[1:] {
 		if values[k] != values[c[0]] {
 			return "", c, false

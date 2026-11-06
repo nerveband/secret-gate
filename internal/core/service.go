@@ -77,11 +77,14 @@ type SSHRequest struct {
 }
 
 // ExecOutcome is the redacted result of a process-only operation.
+// Alternatives names other fields of the item that match the requested
+// field with a different value; if a login fails, request one and retry.
 type ExecOutcome struct {
-	ExitCode   int    `json:"exit_code"`
-	Stdout     string `json:"stdout"`
-	Stderr     string `json:"stderr"`
-	SecretUsed string `json:"secret_used"`
+	ExitCode     int      `json:"exit_code"`
+	Stdout       string   `json:"stdout"`
+	Stderr       string   `json:"stderr"`
+	SecretUsed   string   `json:"secret_used"`
+	Alternatives []string `json:"alternatives,omitempty"`
 }
 
 func requestHint(secretName string) string {
@@ -269,10 +272,11 @@ func (s *Service) Exec(ctx context.Context, req ExecRequest) (*ExecOutcome, erro
 		return nil, err
 	}
 	return &ExecOutcome{
-		ExitCode:   result.ExitCode,
-		Stdout:     result.Stdout,
-		Stderr:     result.Stderr,
-		SecretUsed: req.SecretName + "/" + actual,
+		ExitCode:     result.ExitCode,
+		Stdout:       result.Stdout,
+		Stderr:       result.Stderr,
+		SecretUsed:   req.SecretName + "/" + actual,
+		Alternatives: FieldAlternatives(values, req.Field, actual),
 	}, nil
 }
 

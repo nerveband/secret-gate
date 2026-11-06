@@ -76,6 +76,42 @@ func TestItemFieldValuesDuplicatePasswordFieldsResolveToLoginPassword(t *testing
 	}
 }
 
+// When the saved web-form fields hold other values, each is addressable by
+// its selector, and releasing "password" names them as alternatives so an
+// agent whose login fails can request one and retry.
+func TestDuplicatePasswordFieldsAreAlternativesWithSelectors(t *testing.T) {
+	item := &Item{Category: "LOGIN", Fields: []Field{
+		{ID: "", Label: "password", Type: "STRING", Value: "form-lower"},
+		{ID: "", Label: "Password", Type: "STRING", Value: "form-upper"},
+		{ID: "", Label: "SignIn", Type: "STRING", Value: ""},
+		{ID: "", Label: "SignIn", Type: "STRING", Value: ""},
+		{ID: "password", Label: "password", Type: "CONCEALED", Purpose: "PASSWORD", Value: "real-login-pw"},
+	}}
+	var got []string
+	for _, keys := range fieldSelectors(item.Fields) {
+		got = append(got, keys[0])
+	}
+	if want := []string{"password#1", "Password", "SignIn#1", "SignIn#2", "password"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("selectors = %v, want %v", got, want)
+	}
+	all := itemFieldValues(item)
+	// Server release of "password": the login password, alternatives by name.
+	actual, value, ok := core.ResolveField(all, "password")
+	if !ok || actual != "password" || value != "real-login-pw" {
+		t.Fatalf("password resolved to %q (%v)", actual, ok)
+	}
+	alts := core.FieldAlternatives(all, "password", actual)
+	if strings.Join(alts, ",") != "Password,password#1" {
+		t.Fatalf("alternatives = %v, want [Password password#1]", alts)
+	}
+	// Retrying with each alternative releases that field's value.
+	for selector, want := range map[string]string{"Password": "form-upper", "password#1": "form-lower"} {
+		if _, value, ok := core.ResolveField(all, selector); !ok || value != want {
+			t.Errorf("ResolveField(%q) = (%q, %v), want %q", selector, value, ok, want)
+		}
+	}
+}
+
 func TestItemFieldValuesLabelNeverTakesAnotherFieldsID(t *testing.T) {
 	item := &Item{Category: "LOGIN", Fields: []Field{
 		{ID: "password", Label: "Password", Type: "CONCEALED", Purpose: "PASSWORD", Value: "real-login-pw"},

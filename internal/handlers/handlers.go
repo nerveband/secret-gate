@@ -840,6 +840,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 			// Filter fields if specified
 			if len(s.Fields) > 0 {
 				filtered := make(map[string]string)
+				alternatives := make(map[string][]string)
 				for _, f := range s.Fields {
 					// Attachments are released only when named, base64-encoded
 					// under their "file:" selector, never with the whole item.
@@ -856,6 +857,8 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 					}
 					if actual, val, ok := core.ResolveField(allFields, f); ok {
 						filtered[actual] = val
+						// Names only: other fields matching f, so the agent can retry with one.
+						alternatives[actual] = append(alternatives[actual], core.FieldAlternatives(allFields, f, actual)...)
 					}
 				}
 				if marker, ok := allFields[models.ProcessOnlyKey]; ok {
@@ -865,6 +868,7 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 				released := map[string]models.FieldMeta{}
 				for key, m := range core.FieldMeta(allFields) {
 					if _, ok := filtered[key]; ok {
+						m.Alternatives = alternatives[key]
 						released[key] = m
 					}
 				}

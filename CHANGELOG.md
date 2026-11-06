@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.3 (2026-11-06)
+
+### Added
+- `exec`, `exec --dry-run`, `exec_with_secret`, and `browser fill` return `alternatives`: names of other fields that match the requested name with a different, non-empty value (a saved web-form `Password` next to the login password). An agent whose login fails requests one (`request submit --fields Password`) and retries. The server lists them, names only, when it releases a field; the cached value never answers for an alternative.
+- `item fields` shows each field's `selector`. Fields without an ID whose label repeats (saved web-form fields) are now addressable as `label#n`.
+
+### Changed
+- An exact field name now wins over the 1Password purpose: `Password` reaches a non-empty field labeled exactly `Password`. `password` (the login field's ID) and other spellings still reach the login password, and an empty value still never wins.
+
 ## v0.8.2 (2026-11-06)
 
 ### Fixed

@@ -109,9 +109,12 @@ type SearchResultItem struct {
 
 // FieldInfo holds field metadata (name and type, no values). ProcessOnly
 // fields (card number, CVV, PIN) reach commands and browser fields only.
+// Selector is the name that always addresses the field (ID, label,
+// section.label, or label#n for repeated labels without an ID).
 type FieldInfo struct {
 	ID          string `json:"id"`
 	Label       string `json:"label"`
+	Selector    string `json:"selector,omitempty"`
 	Type        string `json:"type"`
 	Purpose     string `json:"purpose,omitempty"`
 	Section     string `json:"section,omitempty"`

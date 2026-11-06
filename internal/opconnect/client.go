@@ -297,9 +297,12 @@ type SearchResult struct {
 
 // FieldInfo holds metadata about a field without its value. ProcessOnly
 // fields (card number, CVV, PIN) reach commands and browser fields only.
+// Selector is the name that always addresses this field in requests and
+// commands: its ID, else its label, section.label, or label#n.
 type FieldInfo struct {
 	ID          string `json:"id"`
 	Label       string `json:"label"`
+	Selector    string `json:"selector,omitempty"`
 	Type        string `json:"type"`
 	Purpose     string `json:"purpose,omitempty"`
 	Section     string `json:"section,omitempty"`
@@ -379,13 +382,14 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 	}
 
 	var fields []FieldInfo
-	for _, f := range item.Fields {
+	selectors := fieldSelectors(item.Fields)
+	for i, f := range item.Fields {
 		if f.Label != "" || f.ID != "" {
 			section := ""
 			if f.Section != nil {
 				section = f.Section.Label
 			}
-			fields = append(fields, FieldInfo{
+			info := FieldInfo{
 				ID:          f.ID,
 				Label:       f.Label,
 				Type:        f.Type,
@@ -393,7 +397,11 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 				Section:     section,
 				Reference:   f.Reference,
 				ProcessOnly: isProcessOnly(item.Category, f),
-			})
+			}
+			if len(selectors[i]) > 0 {
+				info.Selector = selectors[i][0]
+			}
+			fields = append(fields, info)
 		}
 	}
 
@@ -766,47 +774,22 @@ func (c *Client) FindSecretAcrossVaults(secretName string) (map[string]string, s
 
 // itemFieldValues provides convenient labels while retaining stable selectors.
 // Duplicate labels remain reachable by field ID and section.label. A field
-// ID keeps its key even when another field's label matches it. Card
-// numbers, CVVs, and PINs are listed under models.ProcessOnlyKey so clients
-// keep them out of model context, and every key's field ID, type, and
-// purpose under models.FieldMetaKey. Dates read as YYYY-MM-DD and month-year
-// fields as MM/YYYY, as the 1Password app shows them.
+// ID keeps its key even when another field's label matches it, and a field
+// with no ID whose label repeats is addressed as label#n. Card numbers,
+// CVVs, and PINs are listed under models.ProcessOnlyKey so clients keep them
+// out of model context, and every key's field metadata (ID, label, selector,
+// type, purpose) under models.FieldMetaKey. Dates read as YYYY-MM-DD and
+// month-year fields as MM/YYYY, as the 1Password app shows them.
 func itemFieldValues(item *Item) map[string]string {
 	fields := make(map[string]string)
 	keys := make(map[string][]string)
 	meta := make(map[string]models.FieldMeta)
-	labelCounts := make(map[string]int)
-	for _, f := range item.Fields {
-		if f.Label != "" {
-			labelCounts[f.Label]++
-		}
-	}
-	set := func(f Field, key string) {
-		if _, taken := fields[key]; taken {
-			return
-		}
-		fields[key] = normalizeFieldValue(f)
-		keys[f.ID] = append(keys[f.ID], key)
-		meta[key] = models.FieldMeta{ID: f.ID, Type: f.Type, Purpose: f.Purpose}
-	}
-	for _, f := range item.Fields {
-		if f.ID != "" {
-			set(f, f.ID)
-			// OTP-type fields stay reachable by OTP alias whatever their label.
-			if strings.EqualFold(f.Type, "OTP") && !strings.HasPrefix(f.ID, "TOTP_") {
-				set(f, "TOTP_"+f.ID)
-			}
-		}
-	}
-	for _, f := range item.Fields {
-		if f.Label == "" {
-			continue
-		}
-		if labelCounts[f.Label] == 1 {
-			set(f, f.Label)
-		}
-		if f.Section != nil && f.Section.Label != "" {
-			set(f, f.Section.Label+"."+f.Label)
+	for i, fieldKeys := range fieldSelectors(item.Fields) {
+		f := item.Fields[i]
+		for _, key := range fieldKeys {
+			fields[key] = normalizeFieldValue(f)
+			keys[f.ID] = append(keys[f.ID], key)
+			meta[key] = models.FieldMeta{ID: f.ID, Label: f.Label, Selector: fieldKeys[0], Type: f.Type, Purpose: f.Purpose}
 		}
 	}
 	if marker := processOnlyMarker(item, keys); marker != "" {
@@ -818,6 +801,57 @@ func itemFieldValues(item *Item) map[string]string {
 		}
 	}
 	return fields
+}
+
+// fieldSelectors returns, per field, the value keys that address it; the
+// first is its selector. IDs come first and are never taken by a label.
+// Unique labels and section.label follow. A field left without a key but
+// with a label (saved web-form fields have no ID and often repeat a label)
+// gets label#n, n counting the fields with that label from 1.
+func fieldSelectors(fields []Field) [][]string {
+	out := make([][]string, len(fields))
+	taken := make(map[string]bool)
+	add := func(i int, key string) {
+		if !taken[key] {
+			taken[key] = true
+			out[i] = append(out[i], key)
+		}
+	}
+	labelCounts := make(map[string]int)
+	for i, f := range fields {
+		if f.Label != "" {
+			labelCounts[f.Label]++
+		}
+		if f.ID != "" {
+			add(i, f.ID)
+			// OTP-type fields stay reachable by OTP alias whatever their label.
+			if strings.EqualFold(f.Type, "OTP") && !strings.HasPrefix(f.ID, "TOTP_") {
+				add(i, "TOTP_"+f.ID)
+			}
+		}
+	}
+	for i, f := range fields {
+		if f.Label == "" {
+			continue
+		}
+		if labelCounts[f.Label] == 1 {
+			add(i, f.Label)
+		}
+		if f.Section != nil && f.Section.Label != "" {
+			add(i, f.Section.Label+"."+f.Label)
+		}
+	}
+	ordinal := make(map[string]int)
+	for i, f := range fields {
+		if f.Label == "" {
+			continue
+		}
+		ordinal[f.Label]++
+		if len(out[i]) == 0 {
+			add(i, fmt.Sprintf("%s#%d", f.Label, ordinal[f.Label]))
+		}
+	}
+	return out
 }
 
 func normalizeFieldValue(f Field) string {

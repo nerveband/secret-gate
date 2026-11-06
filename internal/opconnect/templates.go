@@ -463,7 +463,7 @@ func ProcessOnlyFieldRequested(meta *ItemMeta, selectors []string) bool {
 		}
 		n := normalizeLabel(s)
 		for _, f := range protected {
-			if n == normalizeLabel(f.ID) || n == normalizeLabel(f.Label) || (f.Section != "" && n == normalizeLabel(f.Section+"."+f.Label)) {
+			if n == normalizeLabel(f.ID) || n == normalizeLabel(f.Label) || (f.Selector != "" && n == normalizeLabel(f.Selector)) || (f.Section != "" && n == normalizeLabel(f.Section+"."+f.Label)) {
 				return true
 			}
 			if tf, ok := templateFieldFor(meta.Category, s); ok && tf.ID == f.ID {

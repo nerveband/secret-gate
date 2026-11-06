@@ -253,10 +253,17 @@ hyphens, underscores. Interchangeable groups:
 - `note`, `notes`, `secure note`, `notesPlain`
 
 When several fields match (a login's password next to a saved web-form
-`Password`), a non-empty value wins, then the field with the matching
-1Password purpose, so `password` is the login password. If matches still
-differ, the command fails and lists them; pass the field ID or
-`section.label` from `item fields`.
+`Password`), a non-empty value wins, then the exact name, then the field
+with the matching 1Password purpose, so `password` is the login password.
+If matches still differ, the command fails and lists them. Every field has
+a `selector` in `item fields` (its ID, label, `section.label`, or
+`label#n` for repeated labels without an ID); pass it to address that field.
+
+`exec` and `browser fill` return `alternatives` when other fields match the
+name with a different value. If the login fails with the first value,
+request an alternative (`request submit --fields Password`), approve, and
+retry with `--field Password`. The cached value never answers for an
+alternative.
 
 ## MCP workflow (fallback)
 

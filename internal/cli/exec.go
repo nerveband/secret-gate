@@ -64,13 +64,14 @@ func (a *App) runExec(args []string) int {
 				"available fields: "+strings.Join(core.FieldNames(values), ", "))
 		}
 		return a.ok(command, map[string]interface{}{
-			"dry_run":     true,
-			"argv":        argv,
-			"shell":       *shell,
-			"env_var":     *env,
-			"secret_used": *item + "/" + actual,
-			"cwd":         *cwd,
-			"timeout":     timeout.String(),
+			"dry_run":      true,
+			"argv":         argv,
+			"shell":        *shell,
+			"env_var":      *env,
+			"secret_used":  *item + "/" + actual,
+			"alternatives": core.FieldAlternatives(values, *field, actual),
+			"cwd":          *cwd,
+			"timeout":      timeout.String(),
 		}, &Meta{Visibility: VisibilityMetadataOnly, Cache: "hit"})
 	}
 

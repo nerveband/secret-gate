@@ -56,14 +56,27 @@ func TestResolveFieldDuplicatePasswordFields(t *testing.T) {
 			}
 		}
 	}
-	// Two non-empty password-like fields: the PASSWORD purpose wins over an exact label.
+	// Two non-empty password-like fields: an exact name reaches either one,
+	// any other spelling gets the PASSWORD-purpose field, and each names the
+	// other as an alternative so a failed login can retry with it.
 	values := map[string]string{
 		"password":          "real-login-pw",
 		"Password":          "stale-form-value",
-		models.FieldMetaKey: `{"password":{"id":"password","type":"CONCEALED","purpose":"PASSWORD"},"Password":{"type":"STRING"}}`,
+		models.FieldMetaKey: `{"password":{"id":"password","label":"password","selector":"password","type":"CONCEALED","purpose":"PASSWORD"},"Password":{"label":"Password","selector":"Password","type":"STRING"}}`,
 	}
-	if actual, _, ok := ResolveField(values, "Password"); !ok || actual != "password" {
-		t.Fatalf("Password resolved to %q (%v), want the PASSWORD-purpose field", actual, ok)
+	for wanted, want := range map[string]string{"password": "password", "Password": "Password", "PASSWORD": "password", "pass word": "password"} {
+		actual, _, ok := ResolveField(values, wanted)
+		if !ok || actual != want {
+			t.Fatalf("ResolveField(%q) = %q (%v), want %q", wanted, actual, ok, want)
+		}
+		other := map[string]string{"password": "Password", "Password": "password"}[want]
+		if alts := FieldAlternatives(values, wanted, actual); !reflect.DeepEqual(alts, []string{other}) {
+			t.Fatalf("FieldAlternatives(%q) = %v, want [%s]", wanted, alts, other)
+		}
+	}
+	// An empty duplicate is never an alternative.
+	if alts := FieldAlternatives(withMeta, "password", "password"); len(alts) != 0 {
+		t.Fatalf("alternatives = %v, want none for an empty web-form field", alts)
 	}
 	// Without a purpose, a CONCEALED field beats a plain one.
 	values = map[string]string{
@@ -73,6 +86,31 @@ func TestResolveFieldDuplicatePasswordFields(t *testing.T) {
 	}
 	if actual, _, ok := ResolveField(values, "password"); !ok || actual != "pass word" {
 		t.Fatalf("password resolved to %q (%v), want the CONCEALED field", actual, ok)
+	}
+}
+
+// After the server releases only the login password, the cache knows the
+// other candidates by name. Asking for one of them must not return the
+// cached login password; it must be requested, then it resolves.
+func TestResolveFieldServerAlternativesNeedTheirOwnApproval(t *testing.T) {
+	cached := map[string]string{
+		"password":          "real-login-pw",
+		models.FieldMetaKey: `{"password":{"id":"password","selector":"password","type":"CONCEALED","purpose":"PASSWORD","alternatives":["Password","password#1"]}}`,
+	}
+	if alts := FieldAlternatives(cached, "password", "password"); !reflect.DeepEqual(alts, []string{"Password", "password#1"}) {
+		t.Fatalf("alternatives = %v", alts)
+	}
+	for _, wanted := range []string{"Password", "password#1"} {
+		if actual, _, ok := ResolveField(cached, wanted); ok {
+			t.Fatalf("ResolveField(%q) returned cached %q instead of asking for the alternative", wanted, actual)
+		}
+	}
+	if _, value, ok := ResolveField(cached, "PASSWORD"); !ok || value != "real-login-pw" {
+		t.Fatalf("PASSWORD did not resolve to the cached login password")
+	}
+	cached["Password"] = "form-value"
+	if _, value, ok := ResolveField(cached, "Password"); !ok || value != "form-value" {
+		t.Fatalf("approved alternative did not resolve: len %d, %v", len(value), ok)
 	}
 }
 

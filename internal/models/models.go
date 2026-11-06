@@ -48,11 +48,17 @@ const ProcessOnlyKey = ReservedKeyPrefix + "process_only"
 const FieldMetaKey = ReservedKeyPrefix + "fields"
 
 // FieldMeta describes the 1Password field behind one value key. It never
-// holds a value.
+// holds a value. Selector is the key that always addresses the field.
+// Alternatives, set by the server on a released key, names other fields
+// that match the requested name with a different, non-empty value, so an
+// agent whose login fails can request one of them and retry.
 type FieldMeta struct {
-	ID      string `json:"id,omitempty"`
-	Type    string `json:"type,omitempty"`
-	Purpose string `json:"purpose,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	Label        string   `json:"label,omitempty"`
+	Selector     string   `json:"selector,omitempty"`
+	Type         string   `json:"type,omitempty"`
+	Purpose      string   `json:"purpose,omitempty"`
+	Alternatives []string `json:"alternatives,omitempty"`
 }
 
 // IsReservedKey reports whether a value key is server metadata.

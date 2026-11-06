@@ -41,11 +41,14 @@ type BrowserFillRequest struct {
 }
 
 // BrowserFillOutcome reports what was filled, never the values.
+// Alternatives maps a filled field to other fields of the item that match
+// its name with a different value; if a login fails, request one and retry.
 type BrowserFillOutcome struct {
-	Page    passkey.FillPage     `json:"page"`
-	Results []passkey.FillResult `json:"results"`
-	Filled  int                  `json:"filled"`
-	Item    string               `json:"secret_used"`
+	Page         passkey.FillPage     `json:"page"`
+	Results      []passkey.FillResult `json:"results"`
+	Filled       int                  `json:"filled"`
+	Item         string               `json:"secret_used"`
+	Alternatives map[string][]string  `json:"alternatives,omitempty"`
 }
 
 var monthYearValue = regexp.MustCompile(`^(\d{1,2})\s*[/\-. ]\s*(\d{2}|\d{4})$|^(\d{4})[\-/]?(\d{2})$`)
@@ -105,6 +108,7 @@ func (s *Service) BrowserFill(ctx context.Context, req BrowserFillRequest) (*Bro
 	protected := ProcessOnlyKeys(values)
 	steps := make([]passkey.FillStep, 0, len(req.Fields))
 	sensitive := false
+	var alternatives map[string][]string
 	for _, f := range req.Fields {
 		if strings.HasPrefix(f.Field, AttachmentPrefix) {
 			return nil, E(ErrValidation, "attachments cannot be typed into a page", "")
@@ -126,6 +130,12 @@ func (s *Service) BrowserFill(ctx context.Context, req BrowserFillRequest) (*Bro
 			}
 		}
 		steps = append(steps, passkey.FillStep{Field: actual, Selector: f.Selector, Value: value})
+		if alts := FieldAlternatives(values, f.Field, actual); len(alts) > 0 {
+			if alternatives == nil {
+				alternatives = map[string][]string{}
+			}
+			alternatives[actual] = alts
+		}
 	}
 	page, results, err := passkey.Fill(ctx, passkey.FillTarget{
 		Target:       passkey.Target{Endpoint: req.Target.Endpoint, PageURL: req.Target.PageURL, TargetID: req.Target.TargetID},
@@ -141,5 +151,5 @@ func (s *Service) BrowserFill(ctx context.Context, req BrowserFillRequest) (*Bro
 			filled++
 		}
 	}
-	return &BrowserFillOutcome{Page: page, Results: results, Filled: filled, Item: req.SecretName}, nil
+	return &BrowserFillOutcome{Page: page, Results: results, Filled: filled, Item: req.SecretName, Alternatives: alternatives}, nil
 }

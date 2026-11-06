@@ -203,10 +203,11 @@ type InspectFieldsOutput = FieldsResult
 type RequestSecretOutput = RequestResult
 
 type ExecWithSecretOutput struct {
-	ExitCode   int    `json:"exit_code"`
-	Stdout     string `json:"stdout"`
-	Stderr     string `json:"stderr"`
-	SecretUsed string `json:"secret_used"`
+	ExitCode     int      `json:"exit_code"`
+	Stdout       string   `json:"stdout"`
+	Stderr       string   `json:"stderr"`
+	SecretUsed   string   `json:"secret_used"`
+	Alternatives []string `json:"alternatives,omitempty" jsonschema:"other fields matching the requested name with a different value; if a login fails, request one and retry"`
 }
 
 type SSHWithSecretOutput struct {
@@ -532,7 +533,7 @@ func handleExecWithSecret(ctx context.Context, dc FullDaemonClient, input ExecWi
 	if err != nil {
 		return coreError(err), ExecWithSecretOutput{}, nil
 	}
-	return nil, ExecWithSecretOutput{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, SecretUsed: out.SecretUsed}, nil
+	return nil, ExecWithSecretOutput{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, SecretUsed: out.SecretUsed, Alternatives: out.Alternatives}, nil
 }
 
 func handleSSHWithSecret(ctx context.Context, dc FullDaemonClient, cfg Config, input SSHWithSecretInput) (*mcp.CallToolResult, SSHWithSecretOutput, error) {
