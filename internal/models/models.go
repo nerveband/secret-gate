@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -31,10 +32,33 @@ type SecretRequest struct {
 	Summary string `json:"summary,omitempty"`
 }
 
+// ReservedKeyPrefix starts every key the server adds to released item values
+// for metadata. Reserved keys are never field values and never resolve as one.
+const ReservedKeyPrefix = "_secret_gate."
+
 // ProcessOnlyKey is a reserved key the server adds to released item values.
 // Its value lists, comma-separated, the keys whose values may reach a child
 // process or a browser field but never model context (card number, CVV, PIN).
-const ProcessOnlyKey = "_secret_gate.process_only"
+const ProcessOnlyKey = ReservedKeyPrefix + "process_only"
+
+// FieldMetaKey is a reserved key the server adds to released item values.
+// Its value is a JSON object mapping each value key to the 1Password field
+// metadata behind it (FieldMeta), so clients can tell a login's real
+// password field from a saved web-form field with a similar label.
+const FieldMetaKey = ReservedKeyPrefix + "fields"
+
+// FieldMeta describes the 1Password field behind one value key. It never
+// holds a value.
+type FieldMeta struct {
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Purpose string `json:"purpose,omitempty"`
+}
+
+// IsReservedKey reports whether a value key is server metadata.
+func IsReservedKey(key string) bool {
+	return strings.HasPrefix(key, ReservedKeyPrefix)
+}
 
 // SensitiveCacheTTL caps how long the local daemon keeps an item that has
 // process-only values, so one card approval covers one checkout, not a day.

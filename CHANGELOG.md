@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.2 (2026-11-06)
+
+### Fixed
+- A login whose saved web-form fields include an empty "Password" next to the real password released the empty one at random: field names match without case, and the first match in map order won. Resolution is now deterministic: a non-empty value beats an empty one, then the field with the matching 1Password purpose (PASSWORD, USERNAME, NOTES), then a CONCEALED field for `password`, then the exact name. Names that still match several different values fail with a validation error that lists them; use the field ID or `section.label`.
+- A field label no longer replaces another field's value under that field's ID key.
+
+### Changed
+- Released values carry each key's 1Password field ID, type, and purpose under the reserved `_secret_gate.fields` key, and the daemon cache keeps it. Reserved `_secret_gate.*` keys never resolve as fields and never appear in reads or field lists.
+
 ## v0.8.1 (2026-11-03)
 
 ### Added

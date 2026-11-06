@@ -374,7 +374,7 @@ Writes also use Telegram approval. Create and update values stay in server memor
 
 Use `exec_with_secret` when the agent does not need to see a value. `read_item_fields` intentionally returns approved values to the agent for tasks that require their contents, such as reading a secure note. Request only the fields needed for the task.
 
-Field matching is case-insensitive and ignores spaces, hyphens, and underscores. `mfa`, `otp`, `totp`, `2fa`, and `one-time password` are aliases. `note`, `notes`, `secure note`, and `notesPlain` are aliases. Duplicate labels can be addressed by field ID or `section.label`.
+Field matching is case-insensitive and ignores spaces, hyphens, and underscores. `mfa`, `otp`, `totp`, `2fa`, and `one-time password` are aliases. `note`, `notes`, `secure note`, and `notesPlain` are aliases. Duplicate labels can be addressed by field ID or `section.label`. When several fields match a name, a non-empty value wins, then the field with the matching 1Password purpose (so `password` is a login's real password, not a saved web-form `Password`), then a CONCEALED field for `password`, then the exact name; matches that still differ fail with an error listing them.
 
 Telegram keeps the full request narrative after a decision. Approved, denied, and auto-approved messages still show the agent, model, project, requested fields, and original reason, followed by who made the decision.
 

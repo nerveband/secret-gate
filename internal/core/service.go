@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/johnuopini/secret-gate/internal/models"
 	"github.com/johnuopini/secret-gate/internal/otp"
 )
 
@@ -137,7 +138,7 @@ func (s *Service) ReadFields(secretName, vault string, want []string) (map[strin
 	if len(want) == 0 {
 		out := make(map[string]string, len(values))
 		for name, value := range values {
-			if !strings.HasPrefix(name, AttachmentPrefix) && name != ProcessOnlyKey && !protected[name] {
+			if !strings.HasPrefix(name, AttachmentPrefix) && !models.IsReservedKey(name) && !protected[name] {
 				out[name] = value
 			}
 		}
@@ -150,7 +151,10 @@ func (s *Service) ReadFields(secretName, vault string, want []string) (map[strin
 				fmt.Sprintf("run: secret-gate attachment exec --item %q --file %q --env FILE_PATH -- <command>", secretName, file))
 		}
 		actual, value, ok := ResolveField(values, name)
-		if !ok || actual == ProcessOnlyKey {
+		if !ok {
+			if err := FieldAmbiguity(values, name); err != nil {
+				return nil, err
+			}
 			return nil, E(ErrNotFound, fmt.Sprintf("field %q is not available", name),
 				"available fields: "+strings.Join(FieldNames(values), ", "))
 		}
@@ -174,7 +178,7 @@ func (s *Service) GetOTP(secretName, vault, field string) (*OTPResult, error) {
 	}
 	actual, seed, ok := ResolveField(values, wanted)
 	if !ok {
-		if err := otpAmbiguity(values, wanted); err != nil {
+		if err := FieldAmbiguity(values, wanted); err != nil {
 			return nil, err
 		}
 		return nil, E(ErrNotFound, "no OTP/MFA/TOTP/2FA field is available in this item",
@@ -191,20 +195,6 @@ func (s *Service) GetOTP(secretName, vault, field string) (*OTPResult, error) {
 	}, nil
 }
 
-// otpAmbiguity reports an OTP alias that matches several unlabeled OTP fields.
-func otpAmbiguity(values map[string]string, wanted string) error {
-	switch normalizeFieldName(wanted) {
-	case "otp", "totp", "mfa", "2fa", "onetimepassword":
-	default:
-		return nil
-	}
-	ids := OTPFieldIDs(values)
-	if len(ids) < 2 {
-		return nil
-	}
-	return E(ErrValidation, fmt.Sprintf("%q matches several OTP fields: %s", wanted, strings.Join(ids, ", ")),
-		"pass --field <id> with one of the listed field IDs")
-}
 
 // itemRedactor registers every field value of an item so no exact value
 // can survive into captured child output.
@@ -212,7 +202,7 @@ func itemRedactor(secretName string, values map[string]string) *Redactor {
 	r := NewRedactor()
 	protected := ProcessOnlyKeys(values)
 	for name, v := range values {
-		if name == ProcessOnlyKey {
+		if models.IsReservedKey(name) {
 			continue
 		}
 		r.Add(v, secretName+"/"+name)
@@ -260,7 +250,7 @@ func (s *Service) Exec(ctx context.Context, req ExecRequest) (*ExecOutcome, erro
 	}
 	actual, value, ok := ResolveField(values, req.Field)
 	if !ok {
-		if err := otpAmbiguity(values, req.Field); err != nil {
+		if err := FieldAmbiguity(values, req.Field); err != nil {
 			return nil, err
 		}
 		return nil, E(ErrNotFound,

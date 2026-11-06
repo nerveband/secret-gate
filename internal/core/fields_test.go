@@ -2,7 +2,10 @@ package core
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/johnuopini/secret-gate/internal/models"
 )
 
 func TestResolveFieldAliases(t *testing.T) {
@@ -28,6 +31,85 @@ func TestResolveFieldAliases(t *testing.T) {
 		if actual != tt.actual || value != tt.value || ok != tt.ok {
 			t.Errorf("ResolveField(%q) = (%q,%q,%v), want (%q,%q,%v)",
 				tt.wanted, actual, value, ok, tt.actual, tt.value, tt.ok)
+		}
+	}
+}
+
+// The "Example Co @ Accounting" shape: a login's real password field plus a
+// saved web-form "Password" field that is empty. Every spelling of
+// "password" must reach the real one, with or without server metadata.
+func TestResolveFieldDuplicatePasswordFields(t *testing.T) {
+	withMeta := map[string]string{
+		"password":          "real-login-pw",
+		"Password":          "",
+		"username":          "admin@example.com",
+		models.FieldMetaKey: `{"password":{"id":"password","type":"CONCEALED","purpose":"PASSWORD"},"Password":{"type":"STRING"},"username":{"id":"username","type":"STRING","purpose":"USERNAME"}}`,
+	}
+	withoutMeta := map[string]string{"password": "real-login-pw", "Password": ""}
+	for name, values := range map[string]map[string]string{"with meta": withMeta, "without meta": withoutMeta} {
+		for _, wanted := range []string{"password", "Password", "PASSWORD", " pass_word "} {
+			for range 20 { // map order must not matter
+				actual, value, ok := ResolveField(values, wanted)
+				if !ok || actual != "password" || value != "real-login-pw" {
+					t.Fatalf("%s: ResolveField(%q) = (%q, len %d, %v), want the login password", name, wanted, actual, len(value), ok)
+				}
+			}
+		}
+	}
+	// Two non-empty password-like fields: the PASSWORD purpose wins over an exact label.
+	values := map[string]string{
+		"password":          "real-login-pw",
+		"Password":          "stale-form-value",
+		models.FieldMetaKey: `{"password":{"id":"password","type":"CONCEALED","purpose":"PASSWORD"},"Password":{"type":"STRING"}}`,
+	}
+	if actual, _, ok := ResolveField(values, "Password"); !ok || actual != "password" {
+		t.Fatalf("Password resolved to %q (%v), want the PASSWORD-purpose field", actual, ok)
+	}
+	// Without a purpose, a CONCEALED field beats a plain one.
+	values = map[string]string{
+		"pass word":         "concealed",
+		"Password":          "stale-form-value",
+		models.FieldMetaKey: `{"pass word":{"id":"pw-id","type":"CONCEALED"},"Password":{"type":"STRING"}}`,
+	}
+	if actual, _, ok := ResolveField(values, "password"); !ok || actual != "pass word" {
+		t.Fatalf("password resolved to %q (%v), want the CONCEALED field", actual, ok)
+	}
+}
+
+func TestResolveFieldCaseDuplicatesNeedAQualifiedName(t *testing.T) {
+	values := map[string]string{
+		"Email":               "a@example.com",
+		"email":               "b@example.com",
+		"Work.e-mail":         "c@example.com",
+		"field-id-7":          "b@example.com",
+		models.ProcessOnlyKey: "",
+		models.FieldMetaKey:   `{"Email":{"type":"STRING"},"email":{"id":"field-id-7","type":"STRING"}}`,
+	}
+	if _, _, ok := ResolveField(values, "EMAIL"); ok {
+		t.Fatal("EMAIL resolved although two fields with different values match")
+	}
+	err := FieldAmbiguity(values, "EMAIL")
+	if err == nil || CodeOf(err) != ErrValidation || !strings.Contains(err.Error(), "Email, email") {
+		t.Fatalf("FieldAmbiguity(EMAIL) = %v, want a validation error naming Email, email", err)
+	}
+	for wanted, want := range map[string]string{"Email": "a@example.com", "email": "b@example.com", "field-id-7": "b@example.com", "Work.e-mail": "c@example.com"} {
+		if _, value, ok := ResolveField(values, wanted); !ok || value != want {
+			t.Errorf("ResolveField(%q) = (%q, %v), want %q", wanted, value, ok, want)
+		}
+	}
+	// Matches that hold the same value are one answer, not an ambiguity.
+	same := map[string]string{"Token": "t", "token": "t"}
+	if _, value, ok := ResolveField(same, "TOKEN"); !ok || value != "t" || FieldAmbiguity(same, "TOKEN") != nil {
+		t.Fatalf("identical duplicates did not resolve: %q %v", value, ok)
+	}
+	for _, reserved := range []string{models.FieldMetaKey, models.ProcessOnlyKey, "secretgate.fields"} {
+		if _, _, ok := ResolveField(values, reserved); ok {
+			t.Errorf("reserved key resolved for %q", reserved)
+		}
+	}
+	for _, name := range FieldNames(values) {
+		if models.IsReservedKey(name) {
+			t.Errorf("FieldNames lists reserved key %q", name)
 		}
 	}
 }

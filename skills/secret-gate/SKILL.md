@@ -252,6 +252,12 @@ hyphens, underscores. Interchangeable groups:
 - `mfa`, `otp`, `totp`, `2fa`, `one-time password`
 - `note`, `notes`, `secure note`, `notesPlain`
 
+When several fields match (a login's password next to a saved web-form
+`Password`), a non-empty value wins, then the field with the matching
+1Password purpose, so `password` is the login password. If matches still
+differ, the command fails and lists them; pass the field ID or
+`section.label` from `item fields`.
+
 ## MCP workflow (fallback)
 
 `search_secrets` → `inspect_fields` → `request_secret` (with reason and

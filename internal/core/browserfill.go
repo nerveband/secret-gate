@@ -110,7 +110,10 @@ func (s *Service) BrowserFill(ctx context.Context, req BrowserFillRequest) (*Bro
 			return nil, E(ErrValidation, "attachments cannot be typed into a page", "")
 		}
 		actual, value, ok := ResolveField(values, f.Field)
-		if !ok || actual == ProcessOnlyKey {
+		if !ok {
+			if err := FieldAmbiguity(values, f.Field); err != nil {
+				return nil, err
+			}
 			return nil, E(ErrNotFound, fmt.Sprintf("field %q not found in item %q", f.Field, req.SecretName),
 				"available fields: "+strings.Join(FieldNames(values), ", "))
 		}

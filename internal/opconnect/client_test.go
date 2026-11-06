@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/johnuopini/secret-gate/internal/models"
 )
 
 func TestItemFieldValuesKeysOTPFieldsByType(t *testing.T) {
@@ -35,6 +38,51 @@ func TestItemFieldValuesKeepsDuplicateLabelsAddressable(t *testing.T) {
 	}
 	if _, exists := got["context"]; exists {
 		t.Error("ambiguous duplicate label should not be exposed without a section or ID")
+	}
+}
+
+// Regression for "Example Co @ Accounting": the login password sits next to
+// saved web-form fields labeled "password" and "Password" that are empty.
+// The server filter and the client cache must both pick the login password.
+func TestItemFieldValuesDuplicatePasswordFieldsResolveToLoginPassword(t *testing.T) {
+	item := &Item{Category: "LOGIN", Fields: []Field{
+		{ID: "", Label: "password", Type: "STRING", Value: ""},
+		{ID: "username", Label: "username", Type: "STRING", Purpose: "USERNAME", Value: "admin@example.com"},
+		{ID: "", Label: "Password", Type: "STRING", Value: ""},
+		{ID: "", Label: "SignIn", Type: "STRING", Value: ""},
+		{ID: "", Label: "SignIn", Type: "STRING", Value: ""},
+		{ID: "password", Label: "password", Type: "CONCEALED", Purpose: "PASSWORD", Value: "real-login-pw"},
+	}}
+	values := itemFieldValues(item)
+	meta := core.FieldMeta(values)
+	if m := meta["password"]; m.ID != "password" || m.Type != "CONCEALED" || m.Purpose != "PASSWORD" {
+		t.Fatalf("meta[password] = %+v, want the login password field", m)
+	}
+	if m := meta["Password"]; m.ID != "" || m.Type != "STRING" || m.Purpose != "" {
+		t.Fatalf("meta[Password] = %+v, want the web-form field", m)
+	}
+	for _, wanted := range []string{"password", "Password"} {
+		for range 20 {
+			// Server: filter the approved field. Client: resolve it from the cache.
+			actual, value, ok := core.ResolveField(values, wanted)
+			if !ok || actual != "password" || value != "real-login-pw" {
+				t.Fatalf("server ResolveField(%q) = (%q, len %d, %v)", wanted, actual, len(value), ok)
+			}
+			cached := map[string]string{actual: value, models.FieldMetaKey: values[models.FieldMetaKey]}
+			if _, value, ok := core.ResolveField(cached, wanted); !ok || value != "real-login-pw" {
+				t.Fatalf("client ResolveField(%q) = (len %d, %v)", wanted, len(value), ok)
+			}
+		}
+	}
+}
+
+func TestItemFieldValuesLabelNeverTakesAnotherFieldsID(t *testing.T) {
+	item := &Item{Category: "LOGIN", Fields: []Field{
+		{ID: "password", Label: "Password", Type: "CONCEALED", Purpose: "PASSWORD", Value: "real-login-pw"},
+		{ID: "", Label: "password", Type: "STRING", Value: ""},
+	}}
+	if got := itemFieldValues(item); got["password"] != "real-login-pw" {
+		t.Fatalf("key password holds len %d, want the login password", len(got["password"]))
 	}
 }
 

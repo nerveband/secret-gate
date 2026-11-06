@@ -56,6 +56,9 @@ func (a *App) runExec(args []string) int {
 		}
 		actual, _, ok := core.ResolveField(values, *field)
 		if !ok {
+			if err := core.FieldAmbiguity(values, *field); err != nil {
+				return a.failErr(command, err)
+			}
 			return a.fail(command, "not_found",
 				fmt.Sprintf("field %q not found in item %q", *field, *item),
 				"available fields: "+strings.Join(core.FieldNames(values), ", "))

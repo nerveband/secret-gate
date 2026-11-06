@@ -861,6 +861,18 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 				if marker, ok := allFields[models.ProcessOnlyKey]; ok {
 					filtered[models.ProcessOnlyKey] = marker
 				}
+				// Field metadata travels only for released fields.
+				released := map[string]models.FieldMeta{}
+				for key, m := range core.FieldMeta(allFields) {
+					if _, ok := filtered[key]; ok {
+						released[key] = m
+					}
+				}
+				if len(released) > 0 {
+					if raw, err := json.Marshal(released); err == nil {
+						filtered[models.FieldMetaKey] = string(raw)
+					}
+				}
 				result[actualName] = filtered
 			} else {
 				result[actualName] = allFields

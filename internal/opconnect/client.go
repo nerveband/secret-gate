@@ -765,44 +765,57 @@ func (c *Client) FindSecretAcrossVaults(secretName string) (map[string]string, s
 }
 
 // itemFieldValues provides convenient labels while retaining stable selectors.
-// Duplicate labels remain reachable by field ID and section.label. Card
+// Duplicate labels remain reachable by field ID and section.label. A field
+// ID keeps its key even when another field's label matches it. Card
 // numbers, CVVs, and PINs are listed under models.ProcessOnlyKey so clients
-// keep them out of model context. Dates read as YYYY-MM-DD and month-year
+// keep them out of model context, and every key's field ID, type, and
+// purpose under models.FieldMetaKey. Dates read as YYYY-MM-DD and month-year
 // fields as MM/YYYY, as the 1Password app shows them.
 func itemFieldValues(item *Item) map[string]string {
 	fields := make(map[string]string)
 	keys := make(map[string][]string)
+	meta := make(map[string]models.FieldMeta)
 	labelCounts := make(map[string]int)
 	for _, f := range item.Fields {
 		if f.Label != "" {
 			labelCounts[f.Label]++
 		}
 	}
-	for _, f := range item.Fields {
-		value := normalizeFieldValue(f)
-		set := func(key string) {
-			fields[key] = value
-			keys[f.ID] = append(keys[f.ID], key)
+	set := func(f Field, key string) {
+		if _, taken := fields[key]; taken {
+			return
 		}
+		fields[key] = normalizeFieldValue(f)
+		keys[f.ID] = append(keys[f.ID], key)
+		meta[key] = models.FieldMeta{ID: f.ID, Type: f.Type, Purpose: f.Purpose}
+	}
+	for _, f := range item.Fields {
 		if f.ID != "" {
-			set(f.ID)
+			set(f, f.ID)
 			// OTP-type fields stay reachable by OTP alias whatever their label.
 			if strings.EqualFold(f.Type, "OTP") && !strings.HasPrefix(f.ID, "TOTP_") {
-				set("TOTP_" + f.ID)
+				set(f, "TOTP_"+f.ID)
 			}
 		}
+	}
+	for _, f := range item.Fields {
 		if f.Label == "" {
 			continue
 		}
 		if labelCounts[f.Label] == 1 {
-			set(f.Label)
+			set(f, f.Label)
 		}
 		if f.Section != nil && f.Section.Label != "" {
-			set(f.Section.Label + "." + f.Label)
+			set(f, f.Section.Label+"."+f.Label)
 		}
 	}
 	if marker := processOnlyMarker(item, keys); marker != "" {
 		fields[models.ProcessOnlyKey] = marker
+	}
+	if len(meta) > 0 {
+		if raw, err := json.Marshal(meta); err == nil {
+			fields[models.FieldMetaKey] = string(raw)
+		}
 	}
 	return fields
 }
