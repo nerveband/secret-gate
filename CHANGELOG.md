@@ -5,6 +5,7 @@
 ### Changed
 - Secret Gate is now a standalone public project. The Go module path moved from `github.com/johnuopini/secret-gate` to `github.com/nerveband/secret-gate`; update `go install` commands and imports.
 - Deployment docs describe a generic Compose layout. Host-specific notes moved to the gitignored `deploy/LOCAL.md`.
+- README covers all three approval channels (Telegram, PushWard, HTTP Approver API) and states that only one is required, lists `browser_fill`, and documents `daemon flush` as a dry run without `--commit`. The quick start no longer references the removed `.env.example`.
 
 ## v0.8.3 (2026-11-06)
 
