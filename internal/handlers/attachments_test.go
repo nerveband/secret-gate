@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/opconnect"
 )
 
 // fakeAttacher records uploads; failOnce makes the call with that file name

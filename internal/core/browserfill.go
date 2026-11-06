@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/johnuopini/secret-gate/internal/passkey"
+	"github.com/nerveband/secret-gate/internal/passkey"
 )
 
 // FillSpec maps one cached field (optionally reformatted) to a CSS selector.

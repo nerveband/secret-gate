@@ -13,9 +13,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/writegrant"
+	"github.com/nerveband/secret-gate/internal/logger"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/writegrant"
 )
 
 // CallbackHandler is called when a callback query is received from polling

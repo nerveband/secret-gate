@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/otp"
+	"github.com/nerveband/secret-gate/internal/otp"
 )
 
 const (

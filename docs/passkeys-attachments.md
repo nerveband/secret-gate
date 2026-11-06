@@ -153,5 +153,3 @@ releases every session when it stops.
 - Live, before deploy: the passkey manager against agent-browser on
   webauthn.io registered a credential, released it, loaded it into a fresh
   session, and signed in; the sign count advanced from the Unix-time floor.
-- Live end-to-end results after deploy are in
-  `reports/2026-10-25-passkeys-attachments.md`.

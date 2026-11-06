@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/opconnect"
 )
 
 // The "Example Co @ Accounting" shape: the login password next to saved

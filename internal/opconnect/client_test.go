@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 func TestItemFieldValuesKeysOTPFieldsByType(t *testing.T) {

@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/autosession"
-	"github.com/johnuopini/secret-gate/internal/config"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
-	"github.com/johnuopini/secret-gate/internal/store"
-	"github.com/johnuopini/secret-gate/internal/writegrant"
+	"github.com/nerveband/secret-gate/internal/autosession"
+	"github.com/nerveband/secret-gate/internal/config"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/store"
+	"github.com/nerveband/secret-gate/internal/writegrant"
 )
 
 type fakeTelegram struct {

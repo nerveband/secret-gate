@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/requeststate"
+	"github.com/nerveband/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/requeststate"
 )
 
 const (

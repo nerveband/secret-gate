@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/daemon"
 )
 
 func init() {

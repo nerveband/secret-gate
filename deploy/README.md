@@ -1,25 +1,27 @@
 # Deployment and releases
 
-Secret Gate runs on `mac-server` in Colima, using Docker context `colima`.
-The Linux devbox was retired. The live Compose configuration belongs to the
-server control workspace:
+Secret Gate deploys as a container next to 1Password Connect. Keep the Compose
+file that owns your live deployment outside this repository, so credentials,
+hostnames, and webhook URLs never land in source control. Point its
+`secret-gate` build context at a checkout of this repository.
 
-`/path/to/deploy/compose.yaml`
+Recommended shape:
 
-That file builds this checkout for Linux ARM64 and preserves the existing
-Connect services, credential mounts, and webhook URL. Secret Gate listens on
-`127.0.0.1:18080`; Connect has no published host port. Runtime credentials stay
-in their existing restricted files under `~/.config`.
+- Publish Secret Gate on loopback only (for example `127.0.0.1:18080`) and reach
+  it through a reverse proxy or tailnet.
+- Give 1Password Connect no published host port.
+- Keep runtime credentials in restricted files (mode `0600`) and exclude `.env`
+  and `1password-credentials.json` from the build context.
 
-## Deploy on mac-server
+Maintainers keep host-specific notes in `deploy/LOCAL.md`, which is gitignored.
 
-Run from a clean, tested release checkout as `nerveband`. Read the server
-workspace's `AGENTS.md` before deploying. Use the installed standalone
-`docker-compose` command; do not start Docker Desktop or switch Docker context.
+## Deploy
+
+Run from a clean, tested release checkout. Validate Compose without printing
+resolved environment values, and deploy only the `secret-gate` service so
+Connect containers, credentials, and volumes stay untouched.
 
 ```sh
-hostname
-docker context show
 git status --short --branch
 compose=/path/to/deploy/compose.yaml
 docker-compose -f "$compose" config --quiet
@@ -30,11 +32,11 @@ curl -fsS http://127.0.0.1:18080/health
 docker inspect secret-gate-secret-gate-1 --format '{{.State.Health.Status}}'
 ```
 
-Wait for container health to report `healthy`. Keep the previous image until
-verification succeeds. To roll back the server:
+Image and container names follow your Compose project name. Wait for container
+health to report `healthy`. Keep the previous image until verification
+succeeds. To roll back:
 
 ```sh
-compose=/path/to/deploy/compose.yaml
 docker tag secret-gate:pre-release secret-gate-secret-gate
 docker-compose -f "$compose" up -d --no-deps --no-build secret-gate
 curl -fsS http://127.0.0.1:18080/health
@@ -44,6 +46,9 @@ Build the native client with the task-local caches documented in
 [AGENTS.md](../AGENTS.md). Preserve the installed client before replacing
 `~/.local/bin/secret-gate` atomically, then run `secret-gate version`.
 Existing MCP processes load the new binary when next started.
+
+`docker-compose.local.yml` is an optional self-contained local stack
+(Connect plus Secret Gate) for development.
 
 ## Publish a release
 
@@ -58,12 +63,5 @@ native macOS client tests on release tags. Check both workflows and the uploaded
 assets. If GitHub Actions cannot start, report the cause and which local checks
 ran. Do not describe unavailable CI checks as passed.
 
-Deploy the same tagged source on mac-server. Pushing a tag does not update the
-live service automatically.
-
-## Historical DevBox files
-
-`scripts/deploy-devbox-release`, `scripts/install-devbox-release-deployer`, and
-`deploy/systemd/` remain for historical reference. They target the retired Linux
-host and must not be installed or run on mac-server. The optional
-`docker-compose.local.yml` is separate from the live server workspace.
+Pushing a tag does not update a running deployment; deploy the same tagged
+source yourself.

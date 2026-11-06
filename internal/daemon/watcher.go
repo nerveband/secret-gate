@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/requeststate"
+	"github.com/nerveband/secret-gate/internal/requeststate"
 )
 
 type watchTask struct {

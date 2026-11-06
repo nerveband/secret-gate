@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/daemon"
 )
 
 // --- Daemon interfaces ---

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Secret Gate is now a standalone public project. The Go module path moved from `github.com/johnuopini/secret-gate` to `github.com/nerveband/secret-gate`; update `go install` commands and imports.
+- Deployment docs describe a generic Compose layout. Host-specific notes moved to the gitignored `deploy/LOCAL.md`.
+
 ## v0.8.3 (2026-11-06)
 
 ### Added

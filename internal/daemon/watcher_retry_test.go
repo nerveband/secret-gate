@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/requeststate"
+	"github.com/nerveband/secret-gate/internal/requeststate"
 )
 
 func TestMutationWatcherRetriesCompletionUntilSuccess(t *testing.T) {

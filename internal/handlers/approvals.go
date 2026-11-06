@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/store"
+	"github.com/nerveband/secret-gate/internal/logger"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/store"
 )
 
 // ApprovalOption describes a one-tap decision an approver client can render.

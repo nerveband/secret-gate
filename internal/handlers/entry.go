@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/logger"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/opconnect"
 )
 
 // EntryApprover is recorded as the approver of writes completed on the

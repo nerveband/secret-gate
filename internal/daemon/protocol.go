@@ -1,6 +1,6 @@
 package daemon
 
-import "github.com/johnuopini/secret-gate/internal/passkey"
+import "github.com/nerveband/secret-gate/internal/passkey"
 
 const (
 	CmdGet     = "get"

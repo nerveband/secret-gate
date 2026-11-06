@@ -12,7 +12,7 @@ Secret Gate exposes an authenticated **Approver API** (`/approvals/*`) so first-
 
 ## Server Configuration
 
-Set `SECRET_GATE_APPROVER_TOKEN` in `~/.config/secret-gate/server.env` (on `mac-server`, this is already configured and stored in 1Password vault `AI Agents` under item `Secret Gate Approver Token`, field `credential`):
+Set `SECRET_GATE_APPROVER_TOKEN` in the server environment (for example `~/.config/secret-gate/server.env`). Generate a long random token and keep a copy in your password manager:
 
 ```env
 SECRET_GATE_APPROVER_TOKEN=<token>
@@ -25,8 +25,8 @@ Secret Gate can run with Telegram, PushWard, and the Approver API all active at 
 ## Endpoints
 
 Base URL:
-- Loopback on `mac-server`: `http://127.0.0.1:18080`
-- Across the tailnet (e.g. from `mac-laptop`): `https://secret-gate.example.ts.net`
+- Loopback on the Secret Gate host: `http://127.0.0.1:18080`
+- Across a tailnet or reverse proxy: `https://secret-gate.example.ts.net`
 
 All requests require:
 
@@ -148,8 +148,8 @@ Voice Workspace already has the exact UI, notification, CallKit, and Live Activi
 ### Step 1: Config (`services/gateway/src/config.ts`)
 
 Add two optional environment settings (loaded from `~/Library/Application Support/voice-workspace/services.env` or retrieved via Secret Gate):
-- `VW_SECRET_GATE_URL` (default `https://secret-gate.example.ts.net` or `http://127.0.0.1:18080` when on `mac-server`)
-- `VW_SECRET_GATE_APPROVER_TOKEN` (the token stored in 1Password item `Secret Gate Approver Token` in vault `AI Agents`)
+- `VW_SECRET_GATE_URL` (default `https://secret-gate.example.ts.net`, or `http://127.0.0.1:18080` on the Secret Gate host)
+- `VW_SECRET_GATE_APPROVER_TOKEN` (the same value as `SECRET_GATE_APPROVER_TOKEN`)
 
 ### Step 2: Map Secret Gate Approvals to `ThreadRef` in the Gateway
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 func TestResolveFieldAliases(t *testing.T) {

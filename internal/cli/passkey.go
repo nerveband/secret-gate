@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/passkey"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/passkey"
 )
 
 func init() {

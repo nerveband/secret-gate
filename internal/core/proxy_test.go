@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/requeststate"
+	"github.com/nerveband/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/requeststate"
 )
 
 // newApprovalServer scripts a submit → pending → approved → secret flow.

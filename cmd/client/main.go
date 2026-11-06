@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/johnuopini/secret-gate/internal/cli"
-	"github.com/johnuopini/secret-gate/internal/clientconfig"
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/mcpserver"
-	"github.com/johnuopini/secret-gate/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nerveband/secret-gate/internal/cli"
+	"github.com/nerveband/secret-gate/internal/clientconfig"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/mcpserver"
+	"github.com/nerveband/secret-gate/internal/version"
 )
 
 func main() {

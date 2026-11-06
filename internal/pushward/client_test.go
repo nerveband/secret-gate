@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 func TestSealMatchesOfficialVectors(t *testing.T) {

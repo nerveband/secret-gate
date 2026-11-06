@@ -1,10 +1,10 @@
 # Secret Gate repository instructions
 
-## Host and scope
+## Scope
 
-- This checkout is `/path/to/secret-gate` on `mac-server`. The Linux devbox was retired.
-- Verify `pwd`, `hostname`, `id -un`, and `git status --short --branch` before changing files.
-- Work as `nerveband`. Preserve unrelated changes and never print, persist, or commit secret values.
+- This is a public repository. Never commit secret values, hostnames, tailnet names, private IPs, home paths, or personal 1Password item names. Use placeholders such as `example.ts.net` and `/path/to/...`.
+- Maintainer-specific host, path, and deployment notes live in `deploy/LOCAL.md` (gitignored). Read it when present before deploying or touching host state.
+- Verify `pwd`, `hostname`, and `git status --short --branch` before changing files. Preserve unrelated changes and never print, persist, or commit secret values.
 
 ## Build and test
 
@@ -39,16 +39,14 @@ Linux and macOS are the supported client platforms. Run native macOS tests here.
   - `skills/secret-gate/SKILL.md` examples are validated against the live
     manifest by `TestSkillCommandsExistInManifest` — update both together.
 
-## Deployment on mac-server
+## Deployment
 
-- Docker runs in Colima with CLI context `colima`. Use `docker` and the installed standalone `docker-compose`, without sudo. Never start Docker Desktop or change Docker context.
-- The live Compose owner is `/path/to/deploy/compose.yaml`, in the server control workspace. Read that workspace's instructions before deploying.
-- Follow [deploy/README.md](deploy/README.md). Deploy only the `secret-gate` service with `--no-deps`; preserve Connect containers, credentials, volumes, and the existing webhook URL.
-- The live service publishes only `127.0.0.1:18080`. Connect has no host port. Credentials remain in the existing restricted files under `~/.config`; never inspect or copy their contents.
+- Follow [deploy/README.md](deploy/README.md) and `deploy/LOCAL.md` when present. Deploy only the `secret-gate` service with `--no-deps`; preserve Connect containers, credentials, volumes, and the existing webhook URL.
+- Never inspect or copy credential file contents.
 - Validate Compose without printing resolved environment values using `docker-compose ... config --quiet`. Build contexts must exclude `.env` and `1password-credentials.json`.
-- `docker-compose.local.yml` is an optional local stack, not the live deployment owner. The DevBox systemd helpers are historical and must not be installed on mac-server.
+- `docker-compose.local.yml` is an optional local stack, not a live deployment owner.
 - Release tags use `vMAJOR.MINOR.PATCH`. Update `internal/version`, its version test, and `CHANGELOG.md` together. Push the commit and tag only when authorized; verify CI and GitHub release assets, and report unavailable checks accurately.
 
 ## Cleanup
 
-Generated Go caches and binaries belong under task-specific `/tmp/secret-gate-*` paths and can be deleted after verification. Before removing repository files, inspect `git status --ignored` and `git clean -ndX`. Preserve `.env`, `1password-credentials.json`, database volumes, source files, and unclear untracked work.
+Generated Go caches and binaries belong under task-specific `/tmp/secret-gate-*` paths and can be deleted after verification. Before removing repository files, inspect `git status --ignored` and `git clean -ndX`. Preserve `.env`, `1password-credentials.json`, `deploy/LOCAL.md`, database volumes, source files, and unclear untracked work.

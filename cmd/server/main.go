@@ -6,16 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/autosession"
-	"github.com/johnuopini/secret-gate/internal/config"
-	"github.com/johnuopini/secret-gate/internal/handlers"
-	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
-	"github.com/johnuopini/secret-gate/internal/opsdk"
-	"github.com/johnuopini/secret-gate/internal/store"
-	"github.com/johnuopini/secret-gate/internal/pushward"
-	"github.com/johnuopini/secret-gate/internal/telegram"
-	"github.com/johnuopini/secret-gate/internal/version"
+	"github.com/nerveband/secret-gate/internal/autosession"
+	"github.com/nerveband/secret-gate/internal/config"
+	"github.com/nerveband/secret-gate/internal/handlers"
+	"github.com/nerveband/secret-gate/internal/logger"
+	"github.com/nerveband/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/opsdk"
+	"github.com/nerveband/secret-gate/internal/store"
+	"github.com/nerveband/secret-gate/internal/pushward"
+	"github.com/nerveband/secret-gate/internal/telegram"
+	"github.com/nerveband/secret-gate/internal/version"
 )
 
 func main() {

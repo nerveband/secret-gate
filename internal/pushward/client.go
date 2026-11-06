@@ -20,9 +20,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/johnuopini/secret-gate/internal/logger"
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/writegrant"
+	"github.com/nerveband/secret-gate/internal/logger"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/writegrant"
 )
 
 const defaultBaseURL = "https://api.pushward.app"

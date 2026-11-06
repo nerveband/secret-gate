@@ -4,7 +4,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/daemon"
 )
 
 // RealDaemonClient wraps daemon.Client to implement AdminDaemonClient.

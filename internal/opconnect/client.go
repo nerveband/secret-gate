@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 // Client wraps the 1Password Connect API

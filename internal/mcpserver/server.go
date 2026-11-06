@@ -7,11 +7,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/core"
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/passkey"
-	"github.com/johnuopini/secret-gate/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nerveband/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/passkey"
+	"github.com/nerveband/secret-gate/internal/version"
 )
 
 // --- Aliases: the MCP face shares the core domain vocabulary ---

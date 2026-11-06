@@ -87,9 +87,9 @@ Windows is not supported. The cache daemon relies on Unix sockets and POSIX proc
 
 ## Server Deployment
 
-The maintained installation runs on `mac-server` under Colima. See the
-[deployment and release guide](deploy/README.md) for the live Compose owner,
-release steps, verification, and rollback. The Linux devbox is retired.
+Run Secret Gate next to a 1Password Connect server. See the
+[deployment and release guide](deploy/README.md) for the recommended layout,
+release steps, verification, and rollback.
 
 ### Docker Compose (recommended)
 
@@ -115,7 +115,7 @@ docker run -d \
 ### Binary
 
 ```bash
-go install github.com/johnuopini/secret-gate/cmd/server@latest
+go install github.com/nerveband/secret-gate/cmd/server@latest
 ```
 
 Then run the `server` binary with the required environment variables set.
@@ -283,7 +283,7 @@ Download the latest release from [github.com/nerveband/secret-gate/releases](htt
 ### From source
 
 ```bash
-go install github.com/johnuopini/secret-gate/cmd/client@latest
+go install github.com/nerveband/secret-gate/cmd/client@latest
 ```
 
 ## AI Tool Integration
@@ -509,6 +509,12 @@ Contributions are welcome.
 4. Push to the branch and open a Pull Request
 
 Please include tests for new functionality and ensure existing tests pass (`go test ./...`).
+
+## Origins
+
+Secret Gate started as a fork of [johnuopini/secret-gate](https://github.com/johnuopini/secret-gate)
+by Franz (johnuopini) and is now developed independently. The original MIT
+license and copyright notice are retained in [LICENSE](LICENSE).
 
 ## License
 

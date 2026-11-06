@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/passkey"
+	"github.com/nerveband/secret-gate/internal/passkey"
 )
 
 type Server struct {

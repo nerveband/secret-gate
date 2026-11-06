@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/core"
 )
 
 func TestRequestSubmitNoWait(t *testing.T) {

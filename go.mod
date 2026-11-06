@@ -1,4 +1,4 @@
-module github.com/johnuopini/secret-gate
+module github.com/nerveband/secret-gate
 
 go 1.25.0
 

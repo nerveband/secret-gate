@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/daemon"
-	"github.com/johnuopini/secret-gate/internal/passkey"
+	"github.com/nerveband/secret-gate/internal/daemon"
+	"github.com/nerveband/secret-gate/internal/passkey"
 )
 
 // Field labels of an agent-owned passkey item. Only the private key is

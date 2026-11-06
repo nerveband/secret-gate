@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/core"
+	"github.com/nerveband/secret-gate/internal/core"
 )
 
 // App wires the CLI face. All fields are injected so tests can run the

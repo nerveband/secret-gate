@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/store"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/store"
 )
 
 func newTestRequest(token, id string, status models.RequestStatus, ttl time.Duration) *models.ApprovalRequest {

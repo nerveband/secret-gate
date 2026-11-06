@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 // OTPFieldKeyPrefix marks the key of a 1Password OTP-type field. Fields keep

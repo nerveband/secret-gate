@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/models"
-	"github.com/johnuopini/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/opconnect"
 )
 
 // Test card values: a public Visa test number and made-up codes.

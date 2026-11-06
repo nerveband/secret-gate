@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 // templateField maps friendly labels onto a field of a native 1Password

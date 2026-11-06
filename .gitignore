@@ -9,6 +9,9 @@
 1password-credentials.json
 op-data/
 
+# Maintainer-specific deployment notes (hosts, paths); never published
+/deploy/LOCAL.md
+
 # Local scratch files
 *.pem
 *.key

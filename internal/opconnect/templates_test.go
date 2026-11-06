@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/johnuopini/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/models"
 )
 
 // captureCreate returns a client whose Connect records the created item.
