@@ -193,7 +193,7 @@ func TestOwnerWindowNeedsAConfirmTapAndCoversTheWholeVault(t *testing.T) {
 		t.Fatal("the command alone must not open a window")
 	}
 	oh.press(card.kb.InlineKeyboard[0][0].CallbackData, card.id)
-	if text := oh.ctl.edited(card.id); !strings.Contains(text, "Reads open until 14:30") || !strings.Contains(text, "30 min") {
+	if text := oh.ctl.edited(card.id); !strings.Contains(text, "Reads open until 2:30 PM UTC") || !strings.Contains(text, "30 min") {
 		t.Fatalf("the confirm card should become the window card, got %q", text)
 	}
 
@@ -612,8 +612,8 @@ func TestTimezoneSettingChangesEveryClockTheOwnerSees(t *testing.T) {
 	}
 	oh.say("/open")
 	card := oh.ctl.last()
-	if !strings.Contains(card.text, " PST</b>") || !strings.HasPrefix(card.kb.InlineKeyboard[0][0].Text, "✅ Open until 0") {
-		t.Fatalf("confirm card should show Pacific time (14:00 UTC is 06:00 PST):\n%s\n%+v", card.text, card.kb.InlineKeyboard[0][0])
+	if !strings.Contains(card.text, "6:30 AM PST</b>") || card.kb.InlineKeyboard[0][0].Text != "✅ Open until 6:30 AM" {
+		t.Fatalf("confirm card should show Pacific time on a 12-hour clock (14:00 UTC is 6:00 AM PST):\n%s\n%+v", card.text, card.kb.InlineKeyboard[0][0])
 	}
 
 	oh.say("/settings")

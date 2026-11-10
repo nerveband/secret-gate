@@ -18,19 +18,26 @@ func TestTimesShowInTheChosenZoneWithItsAbbreviation(t *testing.T) {
 	if err := Set("pst"); err != nil {
 		t.Fatal(err)
 	}
-	if got := Clock(winter); got != "14:35 PST" {
+	if got := Clock(winter); got != "2:35 PM PST" {
 		t.Fatalf("winter = %q", got)
 	}
-	if got := Clock(summer); got != "15:35 PDT" {
+	if got := Clock(summer); got != "3:35 PM PDT" {
 		t.Fatalf("summer = %q", got)
 	}
-	if got := HM(winter); got != "14:35" {
+	if got := HM(winter); got != "2:35 PM" {
 		t.Fatalf("HM = %q", got)
+	}
+	// Midnight and noon are 12 on a 12-hour clock, never 0.
+	if got := Clock(time.Date(2026, 11, 10, 8, 5, 0, 0, time.UTC)); got != "12:05 AM PST" {
+		t.Fatalf("midnight = %q", got)
+	}
+	if got := Clock(time.Date(2026, 11, 10, 20, 5, 0, 0, time.UTC)); got != "12:05 PM PST" {
+		t.Fatalf("noon = %q", got)
 	}
 	if err := Set("America/New_York"); err != nil {
 		t.Fatal(err)
 	}
-	if got := Clock(winter); got != "17:35 EST" {
+	if got := Clock(winter); got != "5:35 PM EST" {
 		t.Fatalf("eastern = %q", got)
 	}
 }

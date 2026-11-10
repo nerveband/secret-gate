@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.2 (2026-11-10)
+
+### Changed
+- Times shown in Telegram, PushWard, and the owner entry page use a 12-hour clock (`2:35 PM PST`), never 24-hour.
+
 ## v0.9.1 (2026-11-10)
 
 ### Added

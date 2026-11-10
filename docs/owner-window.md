@@ -42,7 +42,7 @@ Only the approver (`TELEGRAM_APPROVER_USER_ID`, which defaults to `TELEGRAM_CHAT
 | `/set <name> <value>` | Changes a setting. `default` clears the change. |
 | `/help` | Lists the commands (also in Telegram's `/` menu). |
 
-**Opening a window is two taps.** Tap "🔓 Open reads 30m" on the pinned panel (or send `/open`). A confirm card arrives with the vault, what is covered and excluded, the budget, and the end time. Tap "✅ Open until 14:35". The card has a single-use nonce, bound to your account and that message, and expires after 2 minutes. The card then becomes the window card with a "🛑 Close now" button and a running counter. The first read of each item sends a short audit message with the same button; later reads of that item only move the counter.
+**Opening a window is two taps.** Tap "🔓 Open reads 30m" on the pinned panel (or send `/open`). A confirm card arrives with the vault, what is covered and excluded, the budget, and the end time. Tap "✅ Open until 2:35 PM". The card has a single-use nonce, bound to your account and that message, and expires after 2 minutes. The card then becomes the window card with a "🛑 Close now" button and a running counter. The first read of each item sends a short audit message with the same button; later reads of that item only move the counter.
 
 ### Alerts: on, silent, off
 
@@ -65,7 +65,7 @@ Settings changes are announced on PushWard and in the audit log.
 | `telegram_notifications` (`notifications`, `alerts`) | `on`, `silent`, `off` | `TELEGRAM_NOTIFICATIONS` (`on`) | See above. |
 | `owner_windows` (`windows`, `phone_windows`) | `on`, `off` | `OWNER_WINDOW_ENABLED` (`off`) | Whether you can open windows from the phone. Turning it off closes open windows. Needs `OWNER_WINDOW_VAULTS`. |
 | `tap_windows` (`tap`) | `on`, `off` | `on` | Whether approval cards offer "Approve 30m" and "Approve + writes". Turning it off hides the buttons, refuses the actions, and ends any open tap window. |
-| `timezone` (`tz`) | `pst`, `mst`, `cst`, `est`, `utc`, or an IANA name such as `Europe/London` | `TIMEZONE` (`America/Los_Angeles`) | The zone every time in Telegram, PushWard, and the entry page is shown in, with its abbreviation (`14:35 PST`, or `PDT` in summer). The panel has buttons for Pacific, Mountain, Central, Eastern, and UTC; `/set timezone <name>` takes any other. |
+| `timezone` (`tz`) | `pst`, `mst`, `cst`, `est`, `utc`, or an IANA name such as `Europe/London` | `TIMEZONE` (`America/Los_Angeles`) | The zone every time in Telegram, PushWard, and the entry page is shown in, on a 12-hour clock with its abbreviation (`2:35 PM PST`, or `PDT` in summer). The panel has buttons for Pacific, Mountain, Central, Eastern, and UTC; `/set timezone <name>` takes any other. |
 
 Changes are saved to `SETTINGS_PATH` (the Docker image sets `/app/state/settings.json`). They survive a container restart. To survive a redeploy that recreates the container, mount a volume at `/app/state`. Without a writable path a change lasts until the next restart, and the panel says so.
 

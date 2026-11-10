@@ -84,11 +84,12 @@ func location() *time.Location {
 	return loc
 }
 
-// Clock formats t in the owner's zone as "15:04 MST" ("14:35 PST").
-func Clock(t time.Time) string { return t.In(location()).Format("15:04 MST") }
+// Clock formats t in the owner's zone on a 12-hour clock with the zone
+// abbreviation: "2:35 PM PST".
+func Clock(t time.Time) string { return t.In(location()).Format("3:04 PM MST") }
 
-// HM formats t in the owner's zone as "15:04".
-func HM(t time.Time) string { return t.In(location()).Format("15:04") }
+// HM formats t in the owner's zone on a 12-hour clock: "2:35 PM".
+func HM(t time.Time) string { return t.In(location()).Format("3:04 PM") }
 
 // Label returns a short human name for a canonical zone: "Pacific" for the
 // presets, the IANA name otherwise.

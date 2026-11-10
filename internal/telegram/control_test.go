@@ -103,7 +103,7 @@ func TestMessagesParseSenderChatAndForwarding(t *testing.T) {
 func TestConfirmCardStatesTheScopeAndEnd(t *testing.T) {
 	until := time.Date(2026, 11, 10, 14, 35, 0, 0, time.UTC)
 	text, kb := WindowConfirmMessage(WindowConfirm{Vault: "AI Agents", Minutes: 30, Until: until, MaxRequests: 30, MaxItems: 10, Nonce: "abc"})
-	for _, want := range []string{"AI Agents", "every item in it", "never to the model", "Not covered: cards, bank, passkeys, files, writes, or Secret Gate credentials", "14:35", "30 min", "Max 30 reads and 10 items"} {
+	for _, want := range []string{"AI Agents", "every item in it", "never to the model", "Not covered: cards, bank, passkeys, files, writes, or Secret Gate credentials", "Until <b>2:35 PM UTC</b>", "30 min", "Max 30 reads and 10 items"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("confirm card missing %q:\n%s", want, text)
 		}
