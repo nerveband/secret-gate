@@ -17,6 +17,7 @@ import (
 	"github.com/nerveband/secret-gate/internal/settings"
 	"github.com/nerveband/secret-gate/internal/store"
 	"github.com/nerveband/secret-gate/internal/telegram"
+	"github.com/nerveband/secret-gate/internal/tz"
 	"github.com/nerveband/secret-gate/internal/version"
 )
 
@@ -56,6 +57,7 @@ func main() {
 		TelegramNotifications: cfg.TelegramNotifications,
 		OwnerWindows:          cfg.OwnerWindowEnabled,
 		TapWindows:            true,
+		Timezone:              cfg.Timezone,
 	})
 	if err != nil {
 		// The store still works with defaults; a damaged file must not keep
@@ -97,6 +99,9 @@ func main() {
 		persistence = "saved to " + cfg.SettingsPath
 	}
 	values := settingsStore.Get()
+	if err := tz.Set(values.Timezone); err != nil {
+		log.Error("Unknown time zone; times are shown in UTC", logger.F("error", err.Error(), "timezone", values.Timezone))
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -167,6 +172,7 @@ func main() {
 		"owner_windows", values.OwnerWindows,
 		"owner_window_vaults", len(cfg.OwnerWindowVaults),
 		"tap_windows", values.TapWindows,
+		"timezone", tz.Name(),
 		"settings", persistence,
 	))
 	srv := &http.Server{

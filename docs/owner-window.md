@@ -65,6 +65,7 @@ Settings changes are announced on PushWard and in the audit log.
 | `telegram_notifications` (`notifications`, `alerts`) | `on`, `silent`, `off` | `TELEGRAM_NOTIFICATIONS` (`on`) | See above. |
 | `owner_windows` (`windows`, `phone_windows`) | `on`, `off` | `OWNER_WINDOW_ENABLED` (`off`) | Whether you can open windows from the phone. Turning it off closes open windows. Needs `OWNER_WINDOW_VAULTS`. |
 | `tap_windows` (`tap`) | `on`, `off` | `on` | Whether approval cards offer "Approve 30m" and "Approve + writes". Turning it off hides the buttons, refuses the actions, and ends any open tap window. |
+| `timezone` (`tz`) | `pst`, `mst`, `cst`, `est`, `utc`, or an IANA name such as `Europe/London` | `TIMEZONE` (`America/Los_Angeles`) | The zone every time in Telegram, PushWard, and the entry page is shown in, with its abbreviation (`14:35 PST`, or `PDT` in summer). The panel has buttons for Pacific, Mountain, Central, Eastern, and UTC; `/set timezone <name>` takes any other. |
 
 Changes are saved to `SETTINGS_PATH` (the Docker image sets `/app/state/settings.json`). They survive a container restart. To survive a redeploy that recreates the container, mount a volume at `/app/state`. Without a writable path a change lasts until the next restart, and the panel says so.
 
@@ -108,6 +109,7 @@ Every event goes to the server log. Set `AUDIT_LOG_PATH` to also append JSON lin
 |---|---|---|
 | `TELEGRAM_APPROVER_USER_ID` | the private chat id | Telegram user whose taps and commands are obeyed. Required for group chats. |
 | `TELEGRAM_NOTIFICATIONS` | `on` | Default alert mode: `on`, `silent`, `off`. |
+| `TIMEZONE` | `America/Los_Angeles` | Default zone for times shown to you. An IANA name or an alias (`pst`, `mst`, `cst`, `est`, `utc`). The server refuses to start on an unknown name. |
 | `OWNER_WINDOW_ENABLED` | `false` | Default for the `owner_windows` setting. |
 | `OWNER_WINDOW_VAULTS` | unset | Comma-separated vault names a window may cover. Empty disables the feature. |
 | `OWNER_WINDOW_TAG` | unset | Optional 1Password tag. When set, only items with it are covered. Unset covers every item in the vault. |

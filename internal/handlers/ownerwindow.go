@@ -19,6 +19,7 @@ import (
 	"github.com/nerveband/secret-gate/internal/ownerwindow"
 	"github.com/nerveband/secret-gate/internal/settings"
 	"github.com/nerveband/secret-gate/internal/telegram"
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 // ControlTelegram is the owner's command surface in Telegram: plain
@@ -87,7 +88,7 @@ func settingsDefaults(cfg *config.Config) settings.Defaults {
 	if mode == "" {
 		mode = settings.NotifyOn
 	}
-	return settings.Defaults{TelegramNotifications: mode, OwnerWindows: cfg.OwnerWindowEnabled, TapWindows: true}
+	return settings.Defaults{TelegramNotifications: mode, OwnerWindows: cfg.OwnerWindowEnabled, TapWindows: true, Timezone: cfg.Timezone}
 }
 
 func (h *Handler) settingsValues() settings.Values { return h.settings.Get() }
@@ -473,7 +474,7 @@ func (h *Handler) announceOpened(win ownerwindow.Window, confirmMessage int) boo
 		}
 	}
 	if h.pwClient != nil {
-		title := "🟢 Reads window open until " + win.ExpiresAt.Format("15:04 MST")
+		title := "🟢 Reads window open until " + tz.Clock(win.ExpiresAt)
 		scope := "every item in it except Secret Gate credentials, cards, passkeys, and files"
 		if win.Tag != "" {
 			scope = fmt.Sprintf("items tagged %q only", win.Tag)
@@ -926,7 +927,7 @@ func (h *Handler) settingsView() telegram.SettingsView {
 	return telegram.SettingsView{
 		Notifications: v.TelegramNotifications, NotificationsEffective: h.telegramMode(),
 		OwnerWindows: v.OwnerWindows, OwnerWindowsAvailable: len(h.config.OwnerWindowVaults) > 0,
-		TapWindows: v.TapWindows, Saved: h.settings.Persistent(),
+		TapWindows: v.TapWindows, Timezone: v.Timezone, Saved: h.settings.Persistent(),
 	}
 }
 
@@ -937,7 +938,7 @@ func (h *Handler) sendSettings() {
 
 func (h *Handler) commandSet(args []string, by string) {
 	if len(args) != 2 {
-		h.reply("Usage: /set &lt;name&gt; &lt;value&gt;\nNames: notifications (on, silent, off), windows (on, off), tap_windows (on, off). Use the value <code>default</code> to clear a change.", nil)
+		h.reply("Usage: /set &lt;name&gt; &lt;value&gt;\nNames: notifications (on, silent, off), windows (on, off), tap_windows (on, off), timezone (pst, mst, cst, est, utc, or a name like Europe/London). Use the value <code>default</code> to clear a change.", nil)
 		return
 	}
 	result, err := h.applySetting(args[0], args[1], by)
@@ -960,6 +961,8 @@ func describe(v settings.Values, name string) string {
 		return onOffText(v.OwnerWindows)
 	case settings.TapWindows:
 		return onOffText(v.TapWindows)
+	case settings.Timezone:
+		return v.Timezone
 	}
 	return ""
 }
@@ -987,6 +990,11 @@ func (h *Handler) applySetting(name, value, by string) (string, error) {
 		return "", err
 	}
 	from, to := describe(before, canonical), describe(after, canonical)
+	if canonical == settings.Timezone {
+		if err := tz.Set(after.Timezone); err != nil {
+			return "", err
+		}
+	}
 	result := fmt.Sprintf("%s: %s", canonical, to)
 	if notSaved {
 		result += " (not saved: lasts until restart)"

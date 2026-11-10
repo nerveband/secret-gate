@@ -22,6 +22,7 @@ import (
 
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/tz"
 	"github.com/nerveband/secret-gate/internal/writegrant"
 )
 
@@ -311,7 +312,7 @@ func (c *Client) getActivity(ctx context.Context, slug string, waitSec int, out 
 func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error {
 	title := "✅ Auto-approved read: " + itemTitle(req)
 	body := fmt.Sprintf("%s in vault %q (approved by %s until %s).\nReason: %s",
-		plainActionSummary(req), req.Vault, approver, expiresAt.Format("15:04 MST"), firstNonEmpty(req.Reason, req.Context.Task, "unspecified"))
+		plainActionSummary(req), req.Vault, approver, tz.Clock(expiresAt), firstNonEmpty(req.Reason, req.Context.Task, "unspecified"))
 	return c.sendNotification(title, req.Vault, body, "passive", "")
 }
 
@@ -320,7 +321,7 @@ func (c *Client) SendWriteAutoApproved(req *models.ApprovalRequest, match writeg
 	title := "✅ Auto-approved write: " + itemTitle(req)
 	scope := "follow-up to " + match.Source
 	if match.Kind == models.AutoApprovedWriteWindow {
-		scope = "write window until " + match.ExpiresAt.Format("15:04 MST")
+		scope = "write window until " + tz.Clock(match.ExpiresAt)
 	}
 	body := fmt.Sprintf("%s (%s, approved by %s).\nReason: %s",
 		plainActionSummary(req), scope, match.Approver, firstNonEmpty(req.Reason, req.Context.Task, "unspecified"))
@@ -329,7 +330,7 @@ func (c *Client) SendWriteAutoApproved(req *models.ApprovalRequest, match writeg
 
 // SendReminder sends a reminder notification shortly before a pending write expires.
 func (c *Client) SendReminder(req *models.ApprovalRequest) error {
-	title := "⏰ Write approval expires at " + req.ExpiresAt.Format("15:04 MST")
+	title := "⏰ Write approval expires at " + tz.Clock(req.ExpiresAt)
 	body := fmt.Sprintf("%s.\nReason: %s", plainActionSummary(req), firstNonEmpty(req.Reason, req.Context.Task, "unspecified"))
 	return c.sendNotification(title, req.Vault, body, "time-sensitive", req.PushWardSlug)
 }

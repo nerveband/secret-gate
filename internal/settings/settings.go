@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 // Setting names.
@@ -20,6 +22,7 @@ const (
 	TelegramNotifications = "telegram_notifications" // on | silent | off
 	OwnerWindows          = "owner_windows"          // on | off
 	TapWindows            = "tap_windows"            // on | off
+	Timezone              = "timezone"               // IANA name or alias, shown in every message
 )
 
 // Alert modes for TelegramNotifications.
@@ -34,6 +37,8 @@ type Defaults struct {
 	TelegramNotifications string
 	OwnerWindows          bool
 	TapWindows            bool
+	// Timezone is the zone times are shown in; empty means tz.Default.
+	Timezone string
 }
 
 // Values are the effective settings.
@@ -41,6 +46,7 @@ type Values struct {
 	TelegramNotifications string `json:"telegram_notifications"`
 	OwnerWindows          bool   `json:"owner_windows"`
 	TapWindows            bool   `json:"tap_windows"`
+	Timezone              string `json:"timezone"`
 }
 
 // ErrNotSaved is returned with a successful in-memory change when the file
@@ -99,6 +105,13 @@ func (s *Store) valuesLocked() Values {
 		TelegramNotifications: s.defaults.TelegramNotifications,
 		OwnerWindows:          s.defaults.OwnerWindows,
 		TapWindows:            s.defaults.TapWindows,
+		Timezone:              s.defaults.Timezone,
+	}
+	if v.Timezone == "" {
+		v.Timezone = tz.Default
+	}
+	if o, ok := s.overrides[Timezone]; ok {
+		v.Timezone = o
 	}
 	if o, ok := s.overrides[TelegramNotifications]; ok {
 		v.TelegramNotifications = o
@@ -124,12 +137,16 @@ func Canonical(name string) (string, bool) {
 		return OwnerWindows, true
 	case "tap_windows", "taps", "tap":
 		return TapWindows, true
+	case "timezone", "time_zone", "tz", "zone":
+		return Timezone, true
 	}
 	return "", false
 }
 
 // Names lists the settings in display order.
-func Names() []string { return []string{TelegramNotifications, OwnerWindows, TapWindows} }
+func Names() []string {
+	return []string{TelegramNotifications, OwnerWindows, TapWindows, Timezone}
+}
 
 // Set changes one setting and returns the new effective values and the
 // previous ones. The value "default" clears the override. If the change is
@@ -179,6 +196,12 @@ func normalize(name, value string) (string, error) {
 			return "off", nil
 		}
 		return "", fmt.Errorf("%s must be on or off", name)
+	case Timezone:
+		_, canonical, err := tz.Resolve(value)
+		if err != nil {
+			return "", err
+		}
+		return canonical, nil
 	}
 	return "", fmt.Errorf("unknown setting %q", name)
 }

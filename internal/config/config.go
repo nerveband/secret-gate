@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 // Config holds all application configuration
@@ -36,6 +38,9 @@ type Config struct {
 	// (delivered without a push), or off (nothing is pushed; commands and
 	// on-demand approval cards still work). /set changes it at runtime.
 	TelegramNotifications string
+	// Timezone is the default zone times are shown in (IANA name or an alias
+	// such as pst). /set timezone changes it at runtime.
+	Timezone string
 
 	// PushWard settings (optional second or standalone approval channel)
 	PushWardAPIKey string
@@ -106,6 +111,7 @@ func Load() (*Config, error) {
 		OPServiceAccountToken: readSecretOrEnv("op_service_account_token", "OP_SERVICE_ACCOUNT_TOKEN"),
 		TelegramBotToken:      readSecretOrEnv("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
 		TelegramNotifications: strings.ToLower(strings.TrimSpace(getEnvDefault("TELEGRAM_NOTIFICATIONS", "on"))),
+		Timezone:              strings.TrimSpace(getEnvDefault("TIMEZONE", tz.Default)),
 		PushWardAPIKey:        firstEnv(readSecretOrEnv("pushward_api_key", "PUSHWARD_API_KEY"), readSecretOrEnv("pushward_api_token", "PUSHWARD_API_TOKEN")),
 		PushWardE2EKey:        readSecretOrEnv("pushward_e2e_key", "PUSHWARD_E2E_KEY"),
 		ApproverToken:         firstEnv(readSecretOrEnv("secret_gate_approver_token", "SECRET_GATE_APPROVER_TOKEN"), readSecretOrEnv("approver_token", "APPROVER_TOKEN")),
@@ -192,6 +198,9 @@ func (c *Config) Validate() error {
 		if c.ApproverUserID() == 0 {
 			return errors.New("TELEGRAM_APPROVER_USER_ID is required when TELEGRAM_CHAT_ID is a group chat")
 		}
+	}
+	if _, _, err := tz.Resolve(c.Timezone); c.Timezone != "" && err != nil {
+		return fmt.Errorf("TIMEZONE: %w", err)
 	}
 	switch c.TelegramNotifications {
 	case "", "on", "silent", "off":

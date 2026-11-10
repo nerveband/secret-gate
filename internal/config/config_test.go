@@ -32,6 +32,7 @@ func TestApproverIsThePrivateChatUnlessSetExplicitly(t *testing.T) {
 func TestValidateRejectsBadSettings(t *testing.T) {
 	cases := map[string]func(*Config){
 		"alert mode":       func(c *Config) { c.TelegramNotifications = "loud" },
+		"time zone":        func(c *Config) { c.Timezone = "Mars/Base" },
 		"opener digest":    func(c *Config) { c.OpenerTokenSHA256 = "abc" },
 		"approver digest":  func(c *Config) { c.ApproverTokenSHA256 = strings.Repeat("z", 64) },
 		"deny pattern":     func(c *Config) { c.OwnerWindowDeny = "(" },

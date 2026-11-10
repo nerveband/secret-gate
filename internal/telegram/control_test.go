@@ -121,21 +121,53 @@ func TestConfirmCardNamesTheTagWhenOneIsConfigured(t *testing.T) {
 }
 
 func TestSettingsPanelMarksTheCurrentChoices(t *testing.T) {
-	text, kb := SettingsMessage(SettingsView{Notifications: "silent", NotificationsEffective: "silent", OwnerWindows: true, OwnerWindowsAvailable: true, TapWindows: false, Saved: true})
+	text, kb := SettingsMessage(SettingsView{Notifications: "silent", NotificationsEffective: "silent", OwnerWindows: true, OwnerWindowsAvailable: true, TapWindows: false, Timezone: "America/Los_Angeles", Saved: true})
 	if !strings.Contains(text, "Telegram alerts</b>: silent") || strings.Contains(text, "restarts") {
 		t.Fatalf("settings text:\n%s", text)
+	}
+	if !strings.Contains(text, "Time zone</b>: Pacific (America/Los_Angeles)") {
+		t.Fatalf("the panel should show the zone:\n%s", text)
 	}
 	row := kb.InlineKeyboard[0]
 	if !strings.HasPrefix(row[1].Text, "✅") || strings.HasPrefix(row[0].Text, "✅") || row[2].CallbackData != "set:telegram_notifications=off" {
 		t.Fatalf("alert row = %+v", row)
 	}
-	if !strings.HasPrefix(kb.InlineKeyboard[1][0].Text, "✅") || !strings.HasPrefix(kb.InlineKeyboard[2][1].Text, "✅") {
-		t.Fatalf("switch rows = %+v", kb.InlineKeyboard[1:3])
+	phone, taps := kb.InlineKeyboard[1][0], kb.InlineKeyboard[2][0]
+	if phone.Text != "✅ Phone windows: ON" || phone.CallbackData != "set:owner_windows=off" {
+		t.Fatalf("phone windows switch = %+v", phone)
+	}
+	if taps.Text != "⬜ Tap windows: OFF" || taps.CallbackData != "set:tap_windows=on" {
+		t.Fatalf("tap windows switch = %+v", taps)
+	}
+	if len(kb.InlineKeyboard[1]) != 1 || len(kb.InlineKeyboard[2]) != 1 {
+		t.Fatal("each flip switch gets its own full-width row so the label is never cut off")
+	}
+	zones := append(append([]InlineKeyboardButton{}, kb.InlineKeyboard[3]...), kb.InlineKeyboard[4]...)
+	if len(zones) != 5 || !strings.HasPrefix(zones[0].Text, "✅ Pacific") || zones[0].CallbackData != "set:timezone=America/Los_Angeles" || strings.HasPrefix(zones[3].Text, "✅") {
+		t.Fatalf("zone buttons = %+v", zones)
 	}
 	for _, row := range kb.InlineKeyboard {
 		for _, b := range row {
 			if len(b.CallbackData) > 64 {
 				t.Fatalf("callback data %q is over Telegram's 64-byte limit", b.CallbackData)
+			}
+			// A row of three shares the screen width; keep those labels short.
+			if len(row) == 3 && len([]rune(b.Text)) > 12 {
+				t.Fatalf("label %q is too long for a row of three", b.Text)
+			}
+		}
+	}
+}
+
+func TestCustomZoneIsShownByName(t *testing.T) {
+	text, kb := SettingsMessage(SettingsView{Notifications: "on", Timezone: "Europe/London", Saved: true})
+	if !strings.Contains(text, "Time zone</b>: Europe/London") || strings.Contains(text, "(Europe/London)") {
+		t.Fatalf("custom zone text:\n%s", text)
+	}
+	for _, row := range kb.InlineKeyboard[3:5] {
+		for _, b := range row {
+			if strings.HasPrefix(b.Text, "✅") {
+				t.Fatalf("no preset should be marked for a custom zone: %+v", b)
 			}
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 // Callback actions of the control surface. Data is "action:argument".
@@ -101,7 +103,8 @@ type SettingsView struct {
 	OwnerWindows           bool
 	OwnerWindowsAvailable  bool // vaults are configured
 	TapWindows             bool
-	Saved                  bool // changes are written to disk
+	Timezone               string // canonical IANA name
+	Saved                  bool   // changes are written to disk
 }
 
 // WindowView is the state of one owner window for messages.
@@ -121,7 +124,7 @@ type WindowView struct {
 	MaxItems    int
 }
 
-func clock(t time.Time) string { return t.Format("15:04 MST") }
+func clock(t time.Time) string { return tz.Clock(t) }
 
 func minutes(w WindowView) int {
 	return int(w.ExpiresAt.Sub(w.OpenedAt).Round(time.Minute) / time.Minute)
@@ -194,7 +197,7 @@ func WindowConfirmMessage(c WindowConfirm) (string, *InlineKeyboardMarkup) {
 	text := "🔓 <b>Open a read window?</b>\n" + scopeLines(c.Vault, c.Tag, c.MaxRequests, c.MaxItems) +
 		fmt.Sprintf("\n\nUntil <b>%s</b> (%d min). It ends on its own; /close ends it early.", clock(c.Until), c.Minutes)
 	return text, &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{
-		button("✅ Open until "+c.Until.Format("15:04"), CBConfirm+":"+c.Nonce),
+		button("✅ Open until "+tz.HM(c.Until), CBConfirm+":"+c.Nonce),
 		button("Cancel", CBCancel+":"+c.Nonce),
 	}}}
 }
@@ -292,10 +295,12 @@ func mark(on bool, label string) string {
 	return label
 }
 
-// SettingsMessage renders the settings panel with one row per switch.
+// SettingsMessage renders the settings panel. The switches are one wide
+// button each, so their labels are never cut off on a phone; the text above
+// explains what each one does.
 func SettingsMessage(v SettingsView) (string, *InlineKeyboardMarkup) {
 	var b strings.Builder
-	b.WriteString("⚙️ <b>Settings</b>\n\n")
+	b.WriteString("⚙️ <b>Settings</b>\nTap a switch to flip it.\n\n")
 	b.WriteString("🔔 <b>Telegram alerts</b>: " + v.Notifications)
 	if v.NotificationsEffective != "" && v.NotificationsEffective != v.Notifications {
 		b.WriteString(" (acting as " + v.NotificationsEffective + ": no other alert channel is configured)")
@@ -305,9 +310,18 @@ func SettingsMessage(v SettingsView) (string, *InlineKeyboardMarkup) {
 	if !v.OwnerWindowsAvailable {
 		b.WriteString(" (no vault is configured, so it cannot be turned on)")
 	}
-	b.WriteString("\nLets you open a read window from here before any request exists.\n\n")
+	b.WriteString("\nOpen a read window from here before any request exists.\n\n")
 	b.WriteString("⏱ <b>Tap windows</b>: " + onOff(v.TapWindows))
-	b.WriteString("\nThe \"Approve 30m\" and \"Approve + writes\" buttons on approval cards.")
+	b.WriteString("\nThe \"Approve 30m\" and \"Approve + writes\" buttons on approval cards.\n\n")
+	zone := v.Timezone
+	if zone == "" {
+		zone = tz.Default
+	}
+	b.WriteString("🕑 <b>Time zone</b>: " + esc(tz.Label(zone)))
+	if tz.Label(zone) != zone {
+		b.WriteString(" (" + esc(zone) + ")")
+	}
+	b.WriteString("\nAll times in messages. Another zone: /set timezone Europe/London")
 	if !v.Saved {
 		b.WriteString("\n\n⚠️ Changes last until the server restarts (no settings file is configured).")
 	}
@@ -317,17 +331,24 @@ func SettingsMessage(v SettingsView) (string, *InlineKeyboardMarkup) {
 			button(mark(v.Notifications == "silent", "🔕 Silent"), CBSet+":telegram_notifications=silent"),
 			button(mark(v.Notifications == "off", "🚫 Off"), CBSet+":telegram_notifications=off"),
 		},
-		{
-			button(mark(v.OwnerWindows, "🔓 Phone windows on"), CBSet+":owner_windows=on"),
-			button(mark(!v.OwnerWindows, "Off"), CBSet+":owner_windows=off"),
-		},
-		{
-			button(mark(v.TapWindows, "⏱ Tap windows on"), CBSet+":tap_windows=on"),
-			button(mark(!v.TapWindows, "Off"), CBSet+":tap_windows=off"),
-		},
-		{button("‹ Panel", CBPanelRedraw+":x")},
+		{button(switchLabel(v.OwnerWindows, "Phone windows"), CBSet+":owner_windows="+onOff(!v.OwnerWindows))},
+		{button(switchLabel(v.TapWindows, "Tap windows"), CBSet+":tap_windows="+onOff(!v.TapWindows))},
 	}
+	var zones []InlineKeyboardButton
+	for _, p := range tz.Presets {
+		zones = append(zones, button(mark(p.Name == zone, p.Label), CBSet+":timezone="+p.Name))
+	}
+	rows = append(rows, zones[:3], zones[3:])
+	rows = append(rows, []InlineKeyboardButton{button("‹ Panel", CBPanelRedraw+":x")})
 	return b.String(), &InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// switchLabel is the one-line label of a flip switch: "✅ Tap windows: ON".
+func switchLabel(on bool, name string) string {
+	if on {
+		return "✅ " + name + ": ON"
+	}
+	return "⬜ " + name + ": OFF"
 }
 
 func onOff(on bool) string {

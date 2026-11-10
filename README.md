@@ -145,6 +145,7 @@ At least one approval channel is required: Telegram (both variables), PushWard, 
 | `OP_SERVICE_ACCOUNT_TOKEN` | No | unset | 1Password service account token used only to attach files (Connect has no upload endpoint). Needs read and write access to the target vaults. Without it, writes with files are refused before approval |
 | `TELEGRAM_APPROVER_USER_ID` | No | the private `TELEGRAM_CHAT_ID` | Telegram user whose taps and commands are obeyed; required when the chat is a group |
 | `TELEGRAM_NOTIFICATIONS` | No | `on` | Default Telegram alert mode: `on`, `silent`, or `off`. Changed at runtime with `/settings` |
+| `TIMEZONE` | No | `America/Los_Angeles` | Zone that times in Telegram, PushWard, and the entry page are shown in. IANA name or alias (`pst`, `est`, `utc`). Changed at runtime with `/settings` or `/set timezone` |
 | `OWNER_WINDOW_VAULTS` | No | unset | Vaults an owner window may cover. Empty disables owner windows. Also `OWNER_WINDOW_ENABLED`, `_TAG`, `_DENY`, `_TTL`, `_MAX`, `_MAX_REQUESTS`, `_MAX_ITEMS`, `_DAILY_MAX`: see [docs/owner-window.md](docs/owner-window.md) |
 | `SECRET_GATE_OPENER_TOKEN_SHA256` | No | unset | SHA-256 of a token that may only open, list, and close owner windows through the Approver API |
 | `SETTINGS_PATH` | No | `/app/state/settings.json` in the image | Where `/set` changes are saved |

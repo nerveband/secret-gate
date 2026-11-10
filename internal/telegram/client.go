@@ -15,6 +15,7 @@ import (
 
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/tz"
 	"github.com/nerveband/secret-gate/internal/writegrant"
 )
 
@@ -169,7 +170,7 @@ func approvalMessage(req *models.ApprovalRequest) string {
 		b.WriteString("\n\nℹ️ Window open, not covering this request: " + html.EscapeString(req.WindowNote))
 	}
 	b.WriteString("\n\nExpires: ")
-	b.WriteString(req.ExpiresAt.Format("15:04 MST"))
+	b.WriteString(tz.Clock(req.ExpiresAt))
 	b.WriteString("\nRequest: <code>")
 	b.WriteString(html.EscapeString(req.ID))
 	b.WriteString("</code>")
@@ -372,14 +373,14 @@ func windowScope(scope writegrant.Scope) string {
 }
 
 func approvedWriteWindowMessage(req *models.ApprovalRequest, approver string, window writegrant.Window) string {
-	return approvedMessage(req, approver, "This request, plus "+windowScope(window.Scope)+" until "+window.ExpiresAt.Format("15:04 MST")+
+	return approvedMessage(req, approver, "This request, plus "+windowScope(window.Scope)+" until "+tz.Clock(window.ExpiresAt)+
 		". Updates are covered only for items written under this approval.")
 }
 
 func autoApprovedWriteMessage(req *models.ApprovalRequest, match writegrant.Match) string {
-	scope := "Follow-up to request " + match.Source + " until " + match.ExpiresAt.Format("15:04 MST")
+	scope := "Follow-up to request " + match.Source + " until " + tz.Clock(match.ExpiresAt)
 	if match.Kind == models.AutoApprovedWriteWindow {
-		scope = "Write window until " + match.ExpiresAt.Format("15:04 MST") + " (opened by request " + match.Source + ")"
+		scope = "Write window until " + tz.Clock(match.ExpiresAt) + " (opened by request " + match.Source + ")"
 	}
 	requester := firstNonEmpty(req.Context.Provider, req.Context.Runtime, req.RequesterMachine, "The requester")
 	return "✅ Auto-approved write: " + purposeSuffix(req) + "\n\n" +
@@ -390,7 +391,7 @@ func autoApprovedWriteMessage(req *models.ApprovalRequest, match writegrant.Matc
 }
 
 func reminderMessage(req *models.ApprovalRequest) string {
-	return "⏰ Write approval expires at " + req.ExpiresAt.Format("15:04 MST") + "\n\n" + actionDescription(req) +
+	return "⏰ Write approval expires at " + tz.Clock(req.ExpiresAt) + "\n\n" + actionDescription(req) +
 		"\n\nTap Approve on the request above. After expiry the agent has to submit the values again." +
 		"\nRequest: <code>" + html.EscapeString(req.ID) + "</code>"
 }
@@ -493,7 +494,7 @@ func formatDurationLabel(d time.Duration) string {
 func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error {
 	_, err := c.sendMessage(SendMessageRequest{
 		ChatID:    c.chatID,
-		Text:      approvedMessage(req, approver, "Until "+expiresAt.Format("15:04 MST")),
+		Text:      approvedMessage(req, approver, "Until "+tz.Clock(expiresAt)),
 		ParseMode: "HTML",
 	})
 	return err

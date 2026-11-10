@@ -21,6 +21,7 @@ import (
 	"github.com/nerveband/secret-gate/internal/ownerwindow"
 	"github.com/nerveband/secret-gate/internal/settings"
 	"github.com/nerveband/secret-gate/internal/telegram"
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 const ownerID = int64(4242)
@@ -599,6 +600,36 @@ func TestSettingsPanelButtonsChangeSettingsInPlace(t *testing.T) {
 	}
 	if oh.h.settingsValues().TelegramNotifications != settings.NotifySilent {
 		t.Fatal("setting not applied")
+	}
+}
+
+func TestTimezoneSettingChangesEveryClockTheOwnerSees(t *testing.T) {
+	t.Cleanup(func() { _ = tz.Set("UTC") })
+	oh := newOwnerHarness(t)
+	oh.say("/set timezone pst")
+	if got := oh.h.settingsValues().Timezone; got != "America/Los_Angeles" || tz.Name() != got {
+		t.Fatalf("zone setting = %q, in use = %q", got, tz.Name())
+	}
+	oh.say("/open")
+	card := oh.ctl.last()
+	if !strings.Contains(card.text, " PST</b>") || !strings.HasPrefix(card.kb.InlineKeyboard[0][0].Text, "✅ Open until 0") {
+		t.Fatalf("confirm card should show Pacific time (14:00 UTC is 06:00 PST):\n%s\n%+v", card.text, card.kb.InlineKeyboard[0][0])
+	}
+
+	oh.say("/settings")
+	panel := oh.ctl.last()
+	oh.press("set:timezone=America/New_York", panel.id)
+	if tz.Name() != "America/New_York" || !strings.Contains(oh.ctl.edited(panel.id), "Time zone</b>: Eastern") {
+		t.Fatalf("zone button: in use %q, panel %q", tz.Name(), oh.ctl.edited(panel.id))
+	}
+
+	oh.say("/set timezone Mars/Base")
+	if !strings.HasPrefix(oh.ctl.last().text, "🚫") || tz.Name() != "America/New_York" {
+		t.Fatalf("a bad zone must be refused and change nothing: %q, in use %q", oh.ctl.last().text, tz.Name())
+	}
+	oh.say("/set timezone default")
+	if tz.Name() != "America/Los_Angeles" {
+		t.Fatalf("default zone not restored: %q", tz.Name())
 	}
 }
 

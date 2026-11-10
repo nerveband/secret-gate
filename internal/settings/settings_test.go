@@ -45,6 +45,30 @@ func TestOverridesSurviveARestart(t *testing.T) {
 	}
 }
 
+func TestTimezoneDefaultsToPacificAndCanonicalisesAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	s, _ := Open(path, Defaults{})
+	if got := s.Get().Timezone; got != "America/Los_Angeles" {
+		t.Fatalf("default zone = %q", got)
+	}
+	if _, after, err := s.Set("timezone", "EST"); err != nil || after.Timezone != "America/New_York" {
+		t.Fatalf("alias: %+v, %v", after, err)
+	}
+	if _, after, err := s.Set("tz", "Europe/London"); err != nil || after.Timezone != "Europe/London" {
+		t.Fatalf("IANA name keeps its case: %+v, %v", after, err)
+	}
+	if _, _, err := s.Set("timezone", "Mars/Base"); err == nil {
+		t.Fatal("an unknown zone must be refused")
+	}
+	reopened, _ := Open(path, Defaults{})
+	if got := reopened.Get().Timezone; got != "Europe/London" {
+		t.Fatalf("zone after restart = %q", got)
+	}
+	if _, after, _ := reopened.Set("timezone", "default"); after.Timezone != "America/Los_Angeles" {
+		t.Fatalf("clearing the override should restore the default, got %q", after.Timezone)
+	}
+}
+
 func TestRejectsUnknownNamesAndValues(t *testing.T) {
 	s, _ := Open("", Defaults{})
 	for _, c := range [][2]string{{"colour", "red"}, {"alerts", "loud"}, {"windows", "maybe"}} {

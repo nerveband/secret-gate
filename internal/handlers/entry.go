@@ -14,6 +14,7 @@ import (
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/models"
 	"github.com/nerveband/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/tz"
 )
 
 // EntryApprover is recorded as the approver of writes completed on the
@@ -117,7 +118,7 @@ func entryPageFor(req *models.ApprovalRequest, message string) entryPage {
 		Reason:    firstNonEmpty(req.Reason, req.Context.Task),
 		Vault:     req.Vault,
 		Error:     message,
-		Expires:   req.ExpiresAt.Format("15:04 MST"),
+		Expires:   tz.Clock(req.ExpiresAt),
 	}
 	for i, m := range req.Mutations {
 		if len(m.OwnerFields) == 0 {
@@ -197,7 +198,7 @@ func (h *Handler) HandleEntry(w http.ResponseWriter, r *http.Request) {
 		h.resolvePushWard(req)
 		h.emitApprovalEvent("approval.approved", req)
 		h.log.Info("Write approved on the owner entry page", logger.F("request_id", req.ID, "items", len(req.Mutations), "vault", req.Vault))
-		h.renderEntry(w, http.StatusOK, entryPage{Done: true, Expires: time.Now().Format("15:04 MST")})
+		h.renderEntry(w, http.StatusOK, entryPage{Done: true, Expires: tz.Clock(time.Now())})
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

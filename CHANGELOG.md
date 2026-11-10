@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.1 (2026-11-10)
+
+### Added
+- `TIMEZONE` setting (`/set timezone`, buttons in `/settings`): every time shown in Telegram, PushWard, and the owner entry page uses your zone with its abbreviation (`14:35 PST`). Default `America/Los_Angeles`. Accepts `pst`, `mst`, `cst`, `est`, `utc`, or any IANA name. Zone data is built into the binary, so it works in the minimal image.
+
+### Changed
+- `/settings` panel: the phone-window and tap-window switches are one full-width button each ("✅ Phone windows: ON"), so their labels are no longer cut off on a phone. Tapping flips the switch.
+
 ## v0.9.0 (2026-11-10)
 
 ### Added
