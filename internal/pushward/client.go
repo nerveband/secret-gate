@@ -341,6 +341,12 @@ func (c *Client) SendWindowRevoked(window writegrant.Window, revoker string, dro
 	return c.sendNotification(title, window.Scope.Vault, body, "active", "")
 }
 
+// SendAudit sends an owner window or settings alert. level is passive,
+// active, or time-sensitive.
+func (c *Client) SendAudit(title, subtitle, body, level string) error {
+	return c.sendNotification(title, subtitle, body, level, "")
+}
+
 // SendWriteBlocked sends an audit warning when a write is blocked by capability checks.
 func (c *Client) SendWriteBlocked(req *models.ApprovalRequest, detail string) error {
 	title := "⛔ Write request blocked: " + itemTitle(req)
@@ -500,7 +506,7 @@ func approvalOptions(req *models.ApprovalRequest, windowTTL time.Duration) []act
 		}
 		return []activityOption{{ID: "approve", Title: title, Style: "primary", Icon: "checkmark.circle.fill"}, deny}
 	}
-	if !req.IsWrite() {
+	if !req.IsWrite() && windowTTL > 0 {
 		return []activityOption{
 			{ID: "approve", Title: "Approve", Style: "primary", Icon: "checkmark.circle.fill"},
 			{ID: "approve_window", Title: truncateRunes("Approve "+formatDuration(windowTTL), 24), Style: "secondary", Icon: "clock.fill"},
@@ -683,7 +689,6 @@ func formatDuration(d time.Duration) string {
 	}
 	return d.String()
 }
-
 
 func truncateRunes(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")

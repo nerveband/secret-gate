@@ -469,9 +469,11 @@ func TestSweepRemindsOnceThenClosesExpiredWrite(t *testing.T) {
 }
 
 type fakePushWard struct {
-	sent     []string
-	resolved []string
-	onAnswer func(data, approver string)
+	sent      []string
+	resolved  []string
+	audits    []string
+	failAudit bool
+	onAnswer  func(data, approver string)
 }
 
 func (f *fakePushWard) SendApprovalRequest(req *models.ApprovalRequest, _ time.Duration) (string, error) {
@@ -500,6 +502,13 @@ func (f *fakePushWard) SendWindowRevoked(writegrant.Window, string, int) error {
 	return nil
 }
 func (f *fakePushWard) SendWriteBlocked(*models.ApprovalRequest, string) error { return nil }
+func (f *fakePushWard) SendAudit(title, _, _, _ string) error {
+	if f.failAudit {
+		return errors.New("pushward down")
+	}
+	f.audits = append(f.audits, title)
+	return nil
+}
 
 func TestPushWardAnswerUpdatesTelegramAndTelegramTapResolvesPushWard(t *testing.T) {
 	wh := newWriteHarness(t)

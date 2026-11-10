@@ -6,14 +6,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nerveband/secret-gate/internal/audit"
 	"github.com/nerveband/secret-gate/internal/autosession"
 	"github.com/nerveband/secret-gate/internal/config"
 	"github.com/nerveband/secret-gate/internal/handlers"
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/opconnect"
 	"github.com/nerveband/secret-gate/internal/opsdk"
-	"github.com/nerveband/secret-gate/internal/store"
 	"github.com/nerveband/secret-gate/internal/pushward"
+	"github.com/nerveband/secret-gate/internal/settings"
+	"github.com/nerveband/secret-gate/internal/store"
 	"github.com/nerveband/secret-gate/internal/telegram"
 	"github.com/nerveband/secret-gate/internal/version"
 )
@@ -44,9 +46,25 @@ func main() {
 	var h *handlers.Handler
 	if tgClient != nil {
 		h = handlers.New(requestStore, opClient, tgClient, cfg, sessionStore)
+		h.SetControl(tgClient)
+		tgClient.SetSilent(h.TelegramSilent)
 	} else {
 		h = handlers.New(requestStore, opClient, nil, cfg, sessionStore)
 	}
+
+	settingsStore, err := settings.Open(cfg.SettingsPath, settings.Defaults{
+		TelegramNotifications: cfg.TelegramNotifications,
+		OwnerWindows:          cfg.OwnerWindowEnabled,
+		TapWindows:            true,
+	})
+	if err != nil {
+		// The store still works with defaults; a damaged file must not keep
+		// the gate from starting.
+		log.Error("Could not read saved settings; using defaults", logger.F("error", err.Error()))
+	}
+	h.SetSettings(settingsStore)
+	h.SetAudit(audit.New(cfg.AuditLogPath))
+
 	attachments := "disabled (no OP_SERVICE_ACCOUNT_TOKEN)"
 	if token := strings.TrimSpace(cfg.OPServiceAccountToken); token != "" {
 		h.SetFileAttacher(opsdk.New(token, version.Version))
@@ -67,9 +85,18 @@ func main() {
 		h.SetPushWardClient(pushward.New(apiKey, e2eKey))
 	}
 	approverAPI := "disabled"
-	if strings.TrimSpace(cfg.ApproverToken) != "" {
+	if strings.TrimSpace(cfg.ApproverToken) != "" || cfg.ApproverTokenSHA256 != "" {
 		approverAPI = "enabled"
 	}
+	openerToken := "disabled"
+	if cfg.OpenerTokenSHA256 != "" {
+		openerToken = "enabled"
+	}
+	persistence := "in memory (set SETTINGS_PATH to keep /set changes across restarts)"
+	if settingsStore.Persistent() {
+		persistence = "saved to " + cfg.SettingsPath
+	}
+	values := settingsStore.Get()
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -87,19 +114,21 @@ func main() {
 	mux.HandleFunc("/openapi.json", h.HandleOpenAPI)
 	mux.HandleFunc("/", handleRoot)
 
-	// Start Telegram polling goroutine
+	// Start Telegram polling goroutine. Only the approver's taps and direct
+	// messages are acted on; the handlers check who sent them.
 	if tgClient != nil {
-		go tgClient.PollUpdates(func(callback *telegram.CallbackQuery) {
-			approver := callback.From.Username
-			if approver == "" {
-				approver = callback.From.FirstName
+		go func() {
+			if err := tgClient.SetCommands(); err != nil {
+				log.Error("Failed to register Telegram commands", logger.F("error", err.Error()))
 			}
-			h.HandleTelegramAction(callback.ID, callback.Data, approver)
-		})
+			h.AnnounceStartup()
+		}()
+		go tgClient.PollUpdates(h.HandleTelegramCallback, h.HandleTelegramMessage)
 	}
 
-	// Write reminders and expired-request message updates need a finer tick
-	// than cleanup: a reminder is only useful before the request expires.
+	// Write reminders, expired-request message updates, and owner window
+	// expiry need a finer tick than cleanup: a reminder is only useful
+	// before the request expires, and a closed window should say so at once.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -133,6 +162,12 @@ func main() {
 		"file_uploads", attachments,
 		"pushward", pushwardStatus,
 		"approver_api", approverAPI,
+		"opener_token", openerToken,
+		"telegram_notifications", values.TelegramNotifications,
+		"owner_windows", values.OwnerWindows,
+		"owner_window_vaults", len(cfg.OwnerWindowVaults),
+		"tap_windows", values.TapWindows,
+		"settings", persistence,
 	))
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

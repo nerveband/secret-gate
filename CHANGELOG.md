@@ -1,8 +1,26 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 (2026-11-10)
+
+### Added
+- Owner windows: open a read window yourself, before any agent asks (`/open`, a pinned panel button, or `POST /approvals/windows`). A window covers every item in `OWNER_WINDOW_VAULTS`, never Secret Gate's own credentials (titles matching `secret gate` or `pushward`; `OWNER_WINDOW_DENY` adds patterns), cards, bank, identity items, passkeys, or attachments, and never writes. An optional `OWNER_WINDOW_TAG` narrows it to items carrying that 1Password tag. Fixed length (30m default, 60m maximum, no extension), a budget of 30 requests and 10 distinct items (`OWNER_WINDOW_MAX_REQUESTS`, `OWNER_WINDOW_MAX_ITEMS`), one window per vault, 6 opens per hour, 4h per day. Every open needs a confirm tap with a single-use card. Design and threat model: [docs/owner-window.md](docs/owner-window.md).
+- Values released under an owner window are process-only (clients refuse `--reveal` and `read_item_fields`, cache at most 15 minutes) and carry a reserved `_secret_gate.expires_at` key; the daemon cache and ssh-agent never keep them past the window's end plus 5 minutes. A read approved by a window that was then revoked or ran out of budget is not released.
+- Telegram control surface: `/panel`, `/open`, `/close`, `/windows`, `/pending`, `/settings`, `/set`, `/help`, registered in the bot's command menu. Telegram polling now also reads text messages.
+- Telegram alert modes `on`, `silent`, `off` (`TELEGRAM_NOTIFICATIONS`, `/set notifications ...`). Silent sends without a push. Off sends nothing unprompted, so PushWard can carry the notifications while Telegram stays a control surface; commands, buttons, replies, `/pending`, and approvals tapped in Telegram keep working. Off acts as silent when PushWard is not configured, and Telegram posts a request silently when PushWard cannot take it.
+- `tap_windows` and `owner_windows` switches in `/settings`. Changes are saved to `SETTINGS_PATH` (the image sets `/app/state/settings.json`) and announced on PushWard.
+- Approver API: `POST /approvals/windows` and `GET /approvals/windows`, an opener token (`SECRET_GATE_OPENER_TOKEN_SHA256`) that can only open, list, and close windows, digest storage for the approver token (`SECRET_GATE_APPROVER_TOKEN_SHA256`), `window.opened`, `window.used`, and `window.closed` SSE events, and read-window support on the revoke route.
+- `AUDIT_LOG_PATH`: owner window and settings events as JSON lines (mode 0600), names and counts only.
+- PushWard `SendAudit` alerts for window open, first use, close, settings changes, and server restart.
 
 ### Changed
+- **Breaking for group chats:** Telegram taps are accepted only from `TELEGRAM_APPROVER_USER_ID` (default: `TELEGRAM_CHAT_ID` when it is a private chat) in the configured chat. A group `TELEGRAM_CHAT_ID` now needs `TELEGRAM_APPROVER_USER_ID`. Taps and messages from anyone else are ignored and logged.
+- Telegram updates that queued while the server was down are dropped at startup, so an old tap cannot fire after a restart.
+- The tap-opened read window ("Approve 30m") no longer covers Secret Gate's own credentials, passkeys, or attachments; those need a tap.
+- Approval cards and PushWard options hide the window buttons when `tap_windows` is off or the window length is 0.
+- Connect item updates keep the item's tags.
+- Telegram long polling uses its own HTTP client instead of swapping the timeout of the shared one.
+- The process-only error message no longer says only "card number, CVV, or PIN".
+- Update clients together with the server: clients before 0.8.0 ignore the process-only marker, and clients without this change keep window-released values for their normal cache time instead of capping them at the window's end.
 - Secret Gate is now a standalone public project. The Go module path moved from `github.com/johnuopini/secret-gate` to `github.com/nerveband/secret-gate`; update `go install` commands and imports.
 - Deployment docs describe a generic Compose layout. Host-specific notes moved to the gitignored `deploy/LOCAL.md`.
 - README covers all three approval channels (Telegram, PushWard, HTTP Approver API) and states that only one is required, lists `browser_fill`, and documents `daemon flush` as a dry run without `--commit`. The quick start no longer references the removed `.env.example`.

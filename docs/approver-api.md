@@ -5,7 +5,7 @@ Secret Gate exposes an authenticated **Approver API** (`/approvals/*`) so first-
 ## Security Model
 
 1. **Zero secret exposure**: `/approvals` and `/approvals/events` emit **metadata only** (request ID, item title, vault, field labels, attachment names/sizes, reason, requester machine, and `context.paseo_agent_id`). Secret values, file contents, and one-time retrieval `/secret/{token}` URLs never appear on the Approver API.
-2. **Bearer authentication**: Every `/approvals*` endpoint requires `Authorization: Bearer <SECRET_GATE_APPROVER_TOKEN>` (or `X-Approver-Token: <token>`), verified in constant time. Agent clients do not hold this token and cannot call `/approvals/*`.
+2. **Bearer authentication**: Every `/approvals*` endpoint requires `Authorization: Bearer <SECRET_GATE_APPROVER_TOKEN>` (or `X-Approver-Token: <token>`), verified in constant time. Agent clients do not hold this token and cannot call `/approvals/*`. The window routes (`/approvals/windows*`) also accept a separate **opener token** that can do nothing else.
 3. **Single-winner synchronization**: A decision from `/approvals/{id}/decide`, Telegram, or PushWard atomically resolves the request, wakes the waiting agent, updates/dismisses the other channels, and broadcasts an `approval.approved` or `approval.denied` SSE event so every connected client clears its UI immediately.
 
 ---
@@ -17,6 +17,8 @@ Set `SECRET_GATE_APPROVER_TOKEN` in the server environment (for example `~/.conf
 ```env
 SECRET_GATE_APPROVER_TOKEN=<token>
 ```
+
+To keep the token itself out of the env file, set its SHA-256 digest (64 hex characters) instead, as `SECRET_GATE_APPROVER_TOKEN_SHA256`. Clients still send the token; the server compares digests in constant time.
 
 Secret Gate can run with Telegram, PushWard, and the Approver API all active at once, or with `SECRET_GATE_APPROVER_TOKEN` alone.
 
@@ -109,8 +111,8 @@ Request body:
 
 Valid `action` values (matching `approval.options[].id`):
 - `"approve"`: Approve this single request.
-- `"approve_window"`: Approve this read request and open the global read auto-approval window (`AUTO_APPROVE_TTL`). Rejected with `400 unknown_option` on writes.
-- `"approve_writes"`: Approve this write request and open a scoped write window (`WRITE_WINDOW_TTL`) for new items from the same machine, IP, Paseo agent ID, and vault.
+- `"approve_window"`: Approve this read request and open the read auto-approval window (`AUTO_APPROVE_TTL`). Rejected with `400 unknown_option` on writes, and while tap windows are off (`/set tap_windows off`). The window never covers Secret Gate's own credentials, passkeys, or attachments.
+- `"approve_writes"`: Approve this write request and open a scoped write window (`WRITE_WINDOW_TTL`) for new items from the same machine, IP, Paseo agent ID, and vault. Rejected while tap windows are off.
 - `"deny"`: Deny the request and scrub any pending write values from memory.
 
 Responses:
@@ -119,7 +121,9 @@ Responses:
 - `410 Gone` (`alert_moved_on`): Request expired before the tap arrived.
 - `404 Not Found` (`not_found`): Unknown request ID.
 
-### 5. Revoke a Write Window: `POST /approvals/windows/{windowId}/revoke`
+### 5. Revoke a Window: `POST /approvals/windows/{windowId}/revoke`
+
+Closes an owner window or a write window. Accepts the approver token or the opener token.
 
 Request body:
 
@@ -129,7 +133,7 @@ Request body:
 }
 ```
 
-Response (`200 OK`):
+Response (`200 OK`) for a write window:
 
 ```json
 {
@@ -138,6 +142,60 @@ Response (`200 OK`):
   "follow_up_grants_removed": 2
 }
 ```
+
+For an owner window the response is `{ "ok": true, "window_id": "..." }`. `409 already_closed` if it is no longer open.
+
+### 6. Owner Windows: `POST /approvals/windows`, `GET /approvals/windows`
+
+<a id="owner-windows"></a>
+
+An owner window lets reads in the configured vault proceed without a tap, from before any request exists. Rules, limits, and the Telegram side: [owner-window.md](owner-window.md). These two routes accept the approver token or the **opener token** (`SECRET_GATE_OPENER_TOKEN_SHA256`). The opener token can use these routes and the revoke route above and nothing else: `GET /approvals`, `/approvals/events`, and `decide` answer `403` for it.
+
+Open (needs `OWNER_WINDOW_VAULTS` and the `owner_windows` setting on):
+
+```http
+POST /approvals/windows
+Authorization: Bearer <opener or approver token>
+
+{ "minutes": 30, "vault": "AI Agents", "approver": "voice-workspace (control)" }
+```
+
+`minutes` is `0` or omitted for the default (`OWNER_WINDOW_TTL`), otherwise 5 up to `OWNER_WINDOW_MAX`. `vault` defaults to the first configured vault. Optional advisory pins: `machine`, `agent_id` (clients report these themselves). `approver` is a label shown in alerts and the audit log.
+
+| Status | Meaning |
+|---|---|
+| `201` | `{ "ok": true, "window": WindowInfo }` |
+| `409 already_open` | A window is already open for the vault. It comes back unchanged; it is never extended. |
+| `422 invalid_minutes`, `422 unknown_vault` | The request is outside the configured limits. |
+| `403 owner_windows_off` | The feature is off or no vault is configured. |
+| `429 rate_limited` | Too many windows in the last hour or day. |
+| `503 audit_unavailable` | No channel could announce the window, so nothing was opened. |
+
+Every window opened this way sends a loud alert to Telegram and PushWard with a close button. That alert is your alarm if anything but you used the token.
+
+List: `GET /approvals/windows` returns `{ "windows": [WindowInfo, ...] }`.
+
+```json
+{
+  "id": "9f1c2e7a5b3d4e60",
+  "vault": "AI Agents",
+  "tag": "",
+  "source": "api",
+  "opener": "voice-workspace (control)",
+  "opened_at": "2026-11-10T14:00:00Z",
+  "expires_at": "2026-11-10T14:30:00Z",
+  "requests": 3,
+  "max_requests": 30,
+  "items": 1,
+  "max_items": 10
+}
+```
+
+`WindowInfo` has counts only, never item names.
+
+SSE events on `/approvals/events` (approver token): `window.opened`, `window.used` (counts moved), and `window.closed` (`reason`: `expired`, `revoked`, `budget_requests`, `budget_items`, `audit_unavailable`), each with `window: WindowInfo`.
+
+Store the opener (and optionally the approver) token as a SHA-256 digest on the server; see [owner-window.md](owner-window.md#approver-api-backup-trigger).
 
 ---
 

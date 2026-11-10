@@ -52,10 +52,17 @@ func cacheKey(secretName, vault string) string {
 }
 
 // Store caches an item's values. Items with process-only values (card
-// number, CVV, PIN) are kept at most models.SensitiveCacheTTL.
+// number, CVV, PIN, or anything released under an owner window) are kept at
+// most models.SensitiveCacheTTL, and values released under an owner window
+// are never kept past the window's end plus models.WindowCacheGrace. Every
+// path that caches, the request flow and the background watcher alike,
+// goes through here.
 func (c *Cache) Store(secretName, vault string, fields map[string]string, ttl time.Duration) {
 	if fields[models.ProcessOnlyKey] != "" && ttl > models.SensitiveCacheTTL {
 		ttl = models.SensitiveCacheTTL
+	}
+	if life, ok := models.RemainingLife(fields, time.Now()); ok && ttl > life {
+		ttl = life
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

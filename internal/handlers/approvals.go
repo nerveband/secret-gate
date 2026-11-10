@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nerveband/secret-gate/internal/config"
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/models"
+	"github.com/nerveband/secret-gate/internal/ownerwindow"
 	"github.com/nerveband/secret-gate/internal/store"
 )
 
@@ -66,12 +68,47 @@ type ApprovalView struct {
 
 // ApprovalEvent is broadcast over GET /approvals/events (SSE).
 type ApprovalEvent struct {
-	Type     string        `json:"type"` // snapshot | approval.created | approval.updated | approval.approved | approval.denied | approval.expired | window.revoked
-	TS       string        `json:"ts"`
-	Approval *ApprovalView `json:"approval,omitempty"`
+	Type     string         `json:"type"` // snapshot | approval.created | approval.updated | approval.approved | approval.denied | approval.expired | window.revoked | window.opened | window.used | window.closed
+	TS       string         `json:"ts"`
+	Approval *ApprovalView  `json:"approval,omitempty"`
 	Pending  []ApprovalView `json:"pending,omitempty"`
-	WindowID string        `json:"window_id,omitempty"`
-	Approver string        `json:"approver,omitempty"`
+	WindowID string         `json:"window_id,omitempty"`
+	Approver string         `json:"approver,omitempty"`
+	// Window and Reason describe owner window events. Item names are not
+	// included, only counts.
+	Window *WindowInfo `json:"window,omitempty"`
+	Reason string      `json:"reason,omitempty"`
+}
+
+// WindowInfo is the metadata-only view of an owner window.
+type WindowInfo struct {
+	ID          string `json:"id"`
+	Vault       string `json:"vault"`
+	Tag         string `json:"tag"`
+	Source      string `json:"source"`
+	Opener      string `json:"opener"`
+	OpenedAt    string `json:"opened_at"`
+	ExpiresAt   string `json:"expires_at"`
+	Requests    int    `json:"requests"`
+	MaxRequests int    `json:"max_requests"`
+	Items       int    `json:"items"`
+	MaxItems    int    `json:"max_items"`
+}
+
+func windowInfo(w ownerwindow.Window) WindowInfo {
+	return WindowInfo{
+		ID: w.ID, Vault: w.Vault, Tag: w.Tag, Source: w.Source, Opener: w.Opener,
+		OpenedAt: w.OpenedAt.UTC().Format(time.RFC3339), ExpiresAt: w.ExpiresAt.UTC().Format(time.RFC3339),
+		Requests: w.Requests, MaxRequests: w.MaxRequests, Items: len(w.Items), MaxItems: w.MaxItems,
+	}
+}
+
+func (h *Handler) emitWindowEvent(eventType string, w ownerwindow.Window, reason string) {
+	if h.approvals == nil {
+		return
+	}
+	info := windowInfo(w)
+	h.approvals.broadcast(ApprovalEvent{Type: eventType, WindowID: w.ID, Window: &info, Reason: reason})
 }
 
 // DecideRequest is the JSON body for POST /approvals/{id}/decide.
@@ -128,26 +165,64 @@ func (hub *approvalHub) broadcast(ev ApprovalEvent) {
 }
 
 func (h *Handler) hasApproverAPI() bool {
-	return strings.TrimSpace(h.config.ApproverToken) != ""
+	return strings.TrimSpace(h.config.ApproverToken) != "" || h.config.ApproverTokenSHA256 != ""
 }
 
-func (h *Handler) checkApproverAuth(w http.ResponseWriter, r *http.Request) bool {
-	expected := strings.TrimSpace(h.config.ApproverToken)
-	if expected == "" {
-		h.writeError(w, http.StatusNotFound, "not_enabled", "Approver API is not enabled (set SECRET_GATE_APPROVER_TOKEN)")
-		return false
-	}
+func (h *Handler) hasOpenerToken() bool { return h.config.OpenerTokenSHA256 != "" }
+
+// bearerToken reads the Authorization bearer token or X-Approver-Token.
+func bearerToken(r *http.Request) string {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	token, ok := strings.CutPrefix(auth, "Bearer ")
 	if !ok {
-		token = strings.TrimSpace(r.Header.Get("X-Approver-Token"))
+		token = r.Header.Get("X-Approver-Token")
 	}
-	token = strings.TrimSpace(token)
-	if subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-		h.writeError(w, http.StatusUnauthorized, "unauthorized", "Valid Bearer SECRET_GATE_APPROVER_TOKEN is required")
+	return strings.TrimSpace(token)
+}
+
+func (h *Handler) isApproverToken(token string) bool {
+	return config.TokenMatches(token, h.config.ApproverToken, h.config.ApproverTokenSHA256)
+}
+
+func (h *Handler) isOpenerToken(token string) bool {
+	return config.TokenMatches(token, "", h.config.OpenerTokenSHA256)
+}
+
+// checkApproverAuth requires the approver token. The opener token is
+// recognized only to answer 403: it can open and close windows, nothing else.
+func (h *Handler) checkApproverAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !h.hasApproverAPI() {
+		h.writeError(w, http.StatusNotFound, "not_enabled", "Approver API is not enabled (set SECRET_GATE_APPROVER_TOKEN)")
 		return false
 	}
-	return true
+	token := bearerToken(r)
+	if h.isApproverToken(token) {
+		return true
+	}
+	if h.hasOpenerToken() && h.isOpenerToken(token) {
+		h.writeError(w, http.StatusForbidden, "forbidden", "This token can only open, list, and close windows")
+		return false
+	}
+	h.writeError(w, http.StatusUnauthorized, "unauthorized", "Valid Bearer SECRET_GATE_APPROVER_TOKEN is required")
+	return false
+}
+
+// checkWindowAuth accepts the approver token or the opener token on the
+// window routes and returns which one was used.
+func (h *Handler) checkWindowAuth(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !h.hasApproverAPI() && !h.hasOpenerToken() {
+		h.writeError(w, http.StatusNotFound, "not_enabled", "Window API is not enabled (set SECRET_GATE_OPENER_TOKEN_SHA256 or SECRET_GATE_APPROVER_TOKEN)")
+		return "", false
+	}
+	token := bearerToken(r)
+	switch {
+	case h.hasApproverAPI() && h.isApproverToken(token):
+		return "approver", true
+	case h.hasOpenerToken() && h.isOpenerToken(token):
+		return "opener", true
+	}
+	h.writeError(w, http.StatusUnauthorized, "unauthorized", "A valid approver or opener bearer token is required")
+	return "", false
 }
 
 func (h *Handler) toApprovalView(req *models.ApprovalRequest) ApprovalView {
@@ -315,11 +390,16 @@ func (h *Handler) emitApprovalEvent(eventType string, req *models.ApprovalReques
 // HandleApprovals routes GET /approvals, GET /approvals/events,
 // POST /approvals/{id}/decide, and POST /approvals/windows/{id}/revoke.
 func (h *Handler) HandleApprovals(w http.ResponseWriter, r *http.Request) {
-	if !h.checkApproverAuth(w, r) {
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/approvals")
 	path = strings.TrimPrefix(path, "/")
+
+	if path == "windows" || strings.HasPrefix(path, "windows/") {
+		if _, ok := h.checkWindowAuth(w, r); !ok {
+			return
+		}
+	} else if !h.checkApproverAuth(w, r) {
+		return
+	}
 
 	switch {
 	case path == "" && r.Method == http.MethodGet:
@@ -328,6 +408,10 @@ func (h *Handler) HandleApprovals(w http.ResponseWriter, r *http.Request) {
 		})
 	case path == "events" && r.Method == http.MethodGet:
 		h.handleApprovalEvents(w, r)
+	case path == "windows" && r.Method == http.MethodPost:
+		h.handleWindowOpen(w, r)
+	case path == "windows" && r.Method == http.MethodGet:
+		h.handleWindowList(w)
 	case strings.HasPrefix(path, "windows/") && strings.HasSuffix(path, "/revoke") && r.Method == http.MethodPost:
 		windowID := strings.TrimSuffix(strings.TrimPrefix(path, "windows/"), "/revoke")
 		h.handleWindowRevoke(w, r, windowID)
@@ -428,6 +512,10 @@ func (h *Handler) handleApprovalDecide(w http.ResponseWriter, r *http.Request, i
 		h.writeError(w, http.StatusConflict, "already_processed", "Request was already processed")
 		return
 	}
+	if (action == "approve_window" || action == "approve_writes") && !h.tapWindowsEnabled() {
+		h.writeError(w, http.StatusBadRequest, "unknown_option", "Tap windows are off")
+		return
+	}
 	if action == "approve_window" && req.IsWrite() {
 		h.writeError(w, http.StatusBadRequest, "unknown_option", "Read windows do not cover writes")
 		return
@@ -460,13 +548,17 @@ func (h *Handler) handleWindowRevoke(w http.ResponseWriter, r *http.Request, win
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	approver := firstNonEmpty(strings.TrimSpace(body.Approver), "approver-api")
 
-	window, dropped, open := h.grants.Revoke(windowID)
-	if !open {
-		h.writeError(w, http.StatusConflict, "already_closed", "Write window already closed")
+	if h.closeOwnerWindow(windowID, approver) {
+		h.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "window_id": windowID})
 		return
 	}
-	if h.tgClient != nil {
-		if err := h.tgClient.SendWindowRevoked(window, approver, dropped); err != nil {
+	window, dropped, open := h.grants.Revoke(windowID)
+	if !open {
+		h.writeError(w, http.StatusConflict, "already_closed", "Window already closed")
+		return
+	}
+	if tg := h.tg(); tg != nil {
+		if err := tg.SendWindowRevoked(window, approver, dropped); err != nil {
 			h.log.Error("Failed to confirm write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
 		}
 	}
@@ -484,8 +576,63 @@ func (h *Handler) handleWindowRevoke(w http.ResponseWriter, r *http.Request, win
 	}
 	h.log.Info("Write window revoked", logger.F("window_id", window.ID, "revoked_by", approver, "follow_up_grants_removed", dropped))
 	h.writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                        true,
-		"window_id":                 window.ID,
+		"ok":                       true,
+		"window_id":                window.ID,
 		"follow_up_grants_removed": dropped,
 	})
+}
+
+// handleWindowOpen opens an owner window for the opener or approver token.
+func (h *Handler) handleWindowOpen(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Minutes  int    `json:"minutes"`
+		Vault    string `json:"vault"`
+		Approver string `json:"approver"`
+		Machine  string `json:"machine"`
+		AgentID  string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON payload")
+		return
+	}
+	label := strings.Join(strings.Fields(body.Approver), " ")
+	if len(label) > 60 {
+		label = label[:60]
+	}
+	win, err := h.openOwnerWindow(openRequest{
+		Minutes: body.Minutes, Vault: body.Vault, Source: sourceAPI, Opener: firstNonEmpty(label, "approver-api"),
+		Machine: strings.TrimSpace(body.Machine), AgentID: strings.TrimSpace(body.AgentID),
+	})
+	switch {
+	case err == nil:
+		h.writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "window": windowInfo(win)})
+	case errors.Is(err, ownerwindow.ErrAlreadyOpen):
+		h.writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "already_open", "message": "A window is already open for this vault; it was not extended.", "window": windowInfo(win),
+		})
+	case errors.Is(err, ownerwindow.ErrRateLimited), errors.Is(err, ownerwindow.ErrDailyCap):
+		h.writeError(w, http.StatusTooManyRequests, "rate_limited", openErrorText(err))
+	case errors.Is(err, errAuditDown):
+		h.writeError(w, http.StatusServiceUnavailable, "audit_unavailable", openErrorText(err))
+	case errors.Is(err, errOwnerDisabled):
+		h.writeError(w, http.StatusForbidden, "owner_windows_off", "Phone windows are off or no vault is configured")
+	case errors.Is(err, errUnknownVault), errors.Is(err, errNoVault):
+		h.writeError(w, http.StatusUnprocessableEntity, "unknown_vault", err.Error())
+	case errors.Is(err, errBadMinutes):
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_minutes",
+			fmt.Sprintf("minutes must be 0 (default) or between %d and %d", int(minWindow/time.Minute), int(h.ownerMax()/time.Minute)))
+	default:
+		h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to open the window")
+	}
+}
+
+// handleWindowList lists open owner windows without item names.
+func (h *Handler) handleWindowList(w http.ResponseWriter) {
+	open := h.owner.List()
+	infos := make([]WindowInfo, 0, len(open))
+	for _, win := range open {
+		infos = append(infos, windowInfo(win))
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].OpenedAt < infos[j].OpenedAt })
+	h.writeJSON(w, http.StatusOK, map[string]any{"windows": infos})
 }

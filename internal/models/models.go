@@ -41,6 +41,33 @@ const ReservedKeyPrefix = "_secret_gate."
 // process or a browser field but never model context (card number, CVV, PIN).
 const ProcessOnlyKey = ReservedKeyPrefix + "process_only"
 
+// ExpiresAtKey is a reserved key the server adds to values released under an
+// owner window. Its value is an RFC 3339 time: clients must not keep the
+// values, in their cache or in ssh-agent, past it. It is the window's end
+// plus WindowCacheGrace.
+const ExpiresAtKey = ReservedKeyPrefix + "expires_at"
+
+// WindowCacheGrace is how long after its window ends a value read at the
+// last minute may stay cached.
+const WindowCacheGrace = 5 * time.Minute
+
+// RemainingLife returns how much longer released values may be kept. ok is
+// false when the server set no limit. The result is never below one second.
+func RemainingLife(values map[string]string, now time.Time) (time.Duration, bool) {
+	raw := values[ExpiresAtKey]
+	if raw == "" {
+		return 0, false
+	}
+	until, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Second, true // unreadable limit: keep the value as short as possible
+	}
+	if d := until.Sub(now); d > time.Second {
+		return d, true
+	}
+	return time.Second, true
+}
+
 // FieldMetaKey is a reserved key the server adds to released item values.
 // Its value is a JSON object mapping each value key to the 1Password field
 // metadata behind it (FieldMeta), so clients can tell a login's real
@@ -188,10 +215,11 @@ func (r *ApprovalRequest) AwaitingOwner() bool {
 	return false
 }
 
-// Approval sources recorded on writes that no human tapped individually.
+// Approval sources recorded on requests that no human tapped individually.
 const (
 	AutoApprovedWriteWindow = "write_window"
 	AutoApprovedFollowUp    = "follow_up"
+	AutoApprovedOwnerWindow = "owner_window"
 )
 
 // ApprovalRequest represents a request to access a secret
@@ -220,13 +248,18 @@ type ApprovalRequest struct {
 	// MutationItemIDs and MutationFilesDone record, per mutation index, the
 	// item already saved and how many of its files are attached, so a retry
 	// after a failed attachment neither recreates the item nor re-attaches.
-	MutationItemIDs   []string   `json:"mutation_item_ids,omitempty"`
-	MutationFilesDone []int      `json:"mutation_files_done,omitempty"`
-	AutoApproved      string     `json:"auto_approved,omitempty"`   // write_window|follow_up
-	Approver          string     `json:"approver,omitempty"`        // Telegram user whose tap covers this request
-	WriteWindowID     string     `json:"write_window_id,omitempty"` // window that approved or was opened by this request
-	RemindedAt        *time.Time `json:"reminded_at,omitempty"`
-	ExpiryNotified    bool       `json:"expiry_notified,omitempty"`
+	MutationItemIDs   []string `json:"mutation_item_ids,omitempty"`
+	MutationFilesDone []int    `json:"mutation_files_done,omitempty"`
+	AutoApproved      string   `json:"auto_approved,omitempty"`   // write_window|follow_up|owner_window
+	Approver          string   `json:"approver,omitempty"`        // Telegram user whose tap covers this request
+	WriteWindowID     string   `json:"write_window_id,omitempty"` // window that approved or was opened by this request
+	// WindowNote tells the approver why an open owner window did not cover
+	// this request ("the item is not tagged for windows").
+	WindowNote string `json:"window_note,omitempty"`
+	// WindowExpiresAt is when the owner window that approved this read ends.
+	WindowExpiresAt time.Time  `json:"window_expires_at,omitzero"`
+	RemindedAt      *time.Time `json:"reminded_at,omitempty"`
+	ExpiryNotified  bool       `json:"expiry_notified,omitempty"`
 	// Sensitive marks card reads that release a card number, CVV, or PIN,
 	// writes to card or bank account items, and writes with owner fields.
 	// They need a tap on this request: read windows, write windows, and

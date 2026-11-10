@@ -15,12 +15,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nerveband/secret-gate/internal/audit"
 	"github.com/nerveband/secret-gate/internal/autosession"
 	"github.com/nerveband/secret-gate/internal/config"
 	"github.com/nerveband/secret-gate/internal/core"
 	"github.com/nerveband/secret-gate/internal/logger"
 	"github.com/nerveband/secret-gate/internal/models"
 	"github.com/nerveband/secret-gate/internal/opconnect"
+	"github.com/nerveband/secret-gate/internal/ownerwindow"
+	"github.com/nerveband/secret-gate/internal/settings"
 	"github.com/nerveband/secret-gate/internal/store"
 	"github.com/nerveband/secret-gate/internal/writegrant"
 )
@@ -51,6 +54,9 @@ type PushWardClient interface {
 	SendReminder(req *models.ApprovalRequest) error
 	SendWindowRevoked(window writegrant.Window, revoker string, dropped int) error
 	SendWriteBlocked(req *models.ApprovalRequest, detail string) error
+	// SendAudit sends an owner window or settings alert. level is passive,
+	// active, or time-sensitive.
+	SendAudit(title, subtitle, body, level string) error
 }
 
 // FileAttacher uploads attachments. 1Password Connect cannot upload files,
@@ -73,19 +79,41 @@ type Handler struct {
 	grants    *writegrant.Store
 	files     FileAttacher // nil when no service account is configured
 	approvals *approvalHub
+
+	// Owner windows and the Telegram control surface.
+	owner    *ownerwindow.Store
+	policy   ownerwindow.Policy
+	settings *settings.Store
+	audit    *audit.Log
+	ctl      ControlTelegram // nil without Telegram
+	now      func() time.Time
+
+	ownerMu    sync.Mutex
+	confirms   map[string]*openConfirm
+	rejectedAt map[int64]time.Time
 }
 
 // New creates a new Handler
 func New(s *store.Store, op *opconnect.Client, tg telegramClient, cfg *config.Config, sessions *autosession.Store) *Handler {
+	policy, err := ownerwindow.NewPolicy(cfg.OwnerWindowTag, cfg.OwnerWindowDeny)
+	if err != nil {
+		policy, _ = ownerwindow.NewPolicy("", "")
+	}
+	runtime, _ := settings.Open("", settingsDefaults(cfg))
 	return &Handler{
-		store:    s,
-		opClient: op,
-		tgClient: tg,
-		config:   cfg,
-		sessions: sessions,
-		log:      logger.New(),
-		grants:   writegrant.NewStore(),
-		approvals: newApprovalHub(),
+		store:      s,
+		opClient:   op,
+		tgClient:   tg,
+		config:     cfg,
+		sessions:   sessions,
+		log:        logger.New(),
+		grants:     writegrant.NewStore(),
+		approvals:  newApprovalHub(),
+		owner:      ownerwindow.NewStore(),
+		policy:     policy,
+		settings:   runtime,
+		confirms:   map[string]*openConfirm{},
+		rejectedAt: map[int64]time.Time{},
 	}
 }
 
@@ -225,6 +253,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		secrets[i].Attachments = nil // server-filled only
 	}
 	sensitiveRead := false
+	var windowItems []ownerwindow.Item
 	if len(mutations) == 0 {
 		for i := range secrets {
 			meta, err := h.opClient.GetItemFields(secrets[i].Vault, secrets[i].SecretName)
@@ -244,6 +273,10 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			if opconnect.ProcessOnlyFieldRequested(meta, secrets[i].Fields) {
 				sensitiveRead = true
 			}
+			windowItems = append(windowItems, ownerwindow.Item{
+				Vault: meta.Vault, Title: meta.Title, Category: meta.Category, Tags: meta.Tags,
+				Fields: secrets[i].Fields, FieldLabels: fieldLabels(meta), Attachments: len(attachments) > 0,
+			})
 		}
 		payload.Context.Purpose = strings.TrimSpace(payload.Context.Purpose)
 		payload.Context.Amount = strings.TrimSpace(payload.Context.Amount)
@@ -340,23 +373,33 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Fingerprint = fingerprintRequest(req)
 
-	// Reads may ride on the global read window. Writes never do: they need a
-	// tap, a write window for this requester and vault, or a follow-up grant.
-	// Card reads and card or bank account writes always need a tap on this request.
-	if session, ok := h.sessions.Match(); ok && !req.IsWrite() && !req.Sensitive {
-		req.Approve()
-		if err := h.store.Save(req); err != nil {
-			h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
+	// Reads may ride on a window. An owner window (opened from the phone
+	// before any request) covers the items of its vault, minus the
+	// exclusions in package ownerwindow (and only tagged ones when a tag is
+	// configured). The older tap-opened window covers every read except Secret Gate's own
+	// credentials, passkeys, and attachments. Writes never ride on a read
+	// window: they need a tap, a write window for this requester and vault,
+	// or a follow-up grant. Card reads and card or bank account writes
+	// always need a tap on this request.
+	if !req.IsWrite() && !req.Sensitive {
+		if h.tryOwnerWindow(w, req, windowItems) {
 			return
 		}
-		h.notifyAutoApprovedRead(req, session.Approver, session.ExpiresAt)
-		h.writeJSON(w, http.StatusAccepted, RequestResponse{
-			Token:     req.Token,
-			StatusURL: h.config.WebhookBaseURL + "/status/" + req.Token,
-			ExpiresAt: req.ExpiresAt.Format(time.RFC3339),
-			Message:   "Request auto-approved by active approval session.",
-		})
-		return
+		if session, ok := h.sessions.Match(); ok && h.tapWindowsEnabled() && h.legacyCovers(req, windowItems) {
+			req.Approve()
+			if err := h.store.Save(req); err != nil {
+				h.writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save request")
+				return
+			}
+			h.notifyAutoApprovedRead(req, session.Approver, session.ExpiresAt)
+			h.writeJSON(w, http.StatusAccepted, RequestResponse{
+				Token:     req.Token,
+				StatusURL: h.config.WebhookBaseURL + "/status/" + req.Token,
+				ExpiresAt: req.ExpiresAt.Format(time.RFC3339),
+				Message:   "Request auto-approved by active approval session.",
+			})
+			return
+		}
 	}
 	if req.IsWrite() && h.autoApproveWrite(w, req) {
 		return
@@ -559,8 +602,12 @@ func (h *Handler) precheckFiles(req *models.ApprovalRequest) (int, string, strin
 	return 0, "", ""
 }
 
-// windowTTL is the window the approver may open from req's Telegram message.
+// windowTTL is the window the approver may open from req's approval card.
+// It is zero, so no window button is offered, while tap windows are off.
 func (h *Handler) windowTTL(req *models.ApprovalRequest) time.Duration {
+	if !h.tapWindowsEnabled() {
+		return 0
+	}
 	if req.IsWrite() {
 		return h.config.WriteWindowTTL
 	}
@@ -799,6 +846,12 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusForbidden, "not_approved", "Request is not approved or has expired")
 		return
 	}
+	// A read approved under an owner window is released only while that
+	// window has not been closed early (revoked, or out of budget).
+	if req.AutoApproved == models.AutoApprovedOwnerWindow && h.owner.ClosedEarly(req.WriteWindowID) {
+		h.writeError(w, http.StatusForbidden, "window_closed", "The window that approved this request was closed")
+		return
+	}
 	if req.IsWrite() {
 		h.executeWrites(w, token)
 		return
@@ -882,6 +935,13 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 				result[actualName] = allFields
 			}
 		}
+		// Values released under an owner window are process-only: clients
+		// refuse to show them to the model and cap their cache at 15 minutes.
+		if req.AutoApproved == models.AutoApprovedOwnerWindow {
+			for _, values := range result {
+				markWindowRelease(req, values)
+			}
+		}
 
 		h.log.Info("Batch secrets retrieved", logger.F("request_id", req.ID, "count", len(result)))
 		h.store.Delete(token)
@@ -912,6 +972,9 @@ func (h *Handler) HandleSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Info("Secret retrieved", logger.F("request_id", req.ID, "secret", actualSecret, "vault", actualVault))
+	if req.AutoApproved == models.AutoApprovedOwnerWindow {
+		markWindowRelease(req, secret)
+	}
 	h.store.Delete(token)
 	h.writeJSON(w, http.StatusOK, SecretResponse{Secret: secret, Vault: actualVault})
 }
@@ -1107,8 +1170,8 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 			return
 		}
 		h.answerCallback(callbackID, "Write window revoked")
-		if h.tgClient != nil {
-			if err := h.tgClient.SendWindowRevoked(window, approver, dropped); err != nil {
+		if tg := h.tg(); tg != nil {
+			if err := tg.SendWindowRevoked(window, approver, dropped); err != nil {
 				h.log.Error("Failed to confirm write window revocation", logger.F("error", err.Error(), "window_id", window.ID))
 			}
 		}
@@ -1152,6 +1215,10 @@ func (h *Handler) HandleTelegramAction(callbackID, data, approver string) {
 
 	if req.AwaitingOwner() && action != "deny" {
 		h.answerCallback(callbackID, "Enter the values on the linked page to approve this write")
+		return
+	}
+	if (action == "approve_window" || action == "approve_writes") && !h.tapWindowsEnabled() {
+		h.answerCallback(callbackID, "Tap windows are off (see /settings)")
 		return
 	}
 	if req.Sensitive && (action == "approve_window" || action == "approve_writes") {
@@ -1256,8 +1323,8 @@ func (h *Handler) resolvePushWard(req *models.ApprovalRequest) {
 }
 
 func (h *Handler) notifyWriteBlocked(req *models.ApprovalRequest, message string) {
-	if h.tgClient != nil {
-		if err := h.tgClient.SendWriteBlocked(req, message); err != nil {
+	if tg := h.tg(); tg != nil {
+		if err := tg.SendWriteBlocked(req, message); err != nil {
 			h.log.Error("Failed to send blocked-write audit notification", logger.F("error", err.Error()))
 		}
 	}
@@ -1269,8 +1336,8 @@ func (h *Handler) notifyWriteBlocked(req *models.ApprovalRequest, message string
 }
 
 func (h *Handler) notifyAutoApprovedRead(req *models.ApprovalRequest, approver string, expiresAt time.Time) {
-	if h.tgClient != nil {
-		if err := h.tgClient.SendAutoApprovedNotification(req, approver, expiresAt); err != nil {
+	if tg := h.tg(); tg != nil {
+		if err := tg.SendAutoApprovedNotification(req, approver, expiresAt); err != nil {
 			h.log.Error("Failed to send auto-approval audit notification", logger.F("error", err.Error(), "request_id", req.ID))
 		}
 	}
@@ -1283,8 +1350,8 @@ func (h *Handler) notifyAutoApprovedRead(req *models.ApprovalRequest, approver s
 
 func (h *Handler) notifyWriteAutoApproved(req *models.ApprovalRequest, match writegrant.Match) bool {
 	sent := false
-	if h.tgClient != nil {
-		if err := h.tgClient.SendWriteAutoApproved(req, match); err != nil {
+	if tg := h.tg(); tg != nil {
+		if err := tg.SendWriteAutoApproved(req, match); err != nil {
 			h.log.Error("Failed to send Telegram write auto-approval audit", logger.F("error", err.Error(), "request_id", req.ID))
 		} else {
 			sent = true
@@ -1306,14 +1373,19 @@ func (h *Handler) notifyWriteAutoApproved(req *models.ApprovalRequest, match wri
 func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.ApprovalRequest) bool {
 	ttl := h.windowTTL(req)
 	delivered := false
-	if h.tgClient != nil {
+	sendTelegram := func() bool {
 		msgID, err := h.tgClient.SendApprovalRequest(req, h.config.WebhookBaseURL, ttl)
 		if err != nil {
 			h.log.Error("Failed to send Telegram approval request", logger.F("error", err.Error(), "request_id", req.ID))
-		} else {
-			req.TelegramMsgID = msgID
-			delivered = true
+			return false
 		}
+		req.TelegramMsgID = msgID
+		return true
+	}
+	// With Telegram alerts off the card goes to PushWard only. Entry-page
+	// writes are the exception: they are approved from a link in Telegram.
+	if h.tgClient != nil && (h.tg() != nil || req.AwaitingOwner()) {
+		delivered = sendTelegram()
 	}
 	// Entry-page writes are approved by submitting the page linked from
 	// Telegram; PushWard approval cards need at least two options.
@@ -1329,6 +1401,11 @@ func (h *Handler) deliverApprovalRequest(w http.ResponseWriter, req *models.Appr
 				h.HandleTelegramAction("", data, approver)
 			})
 		}
+	}
+	// Alerts are off in Telegram but no other channel took the request:
+	// post it there silently rather than leave it unheard.
+	if !delivered && h.tgClient != nil && req.TelegramMsgID == 0 {
+		delivered = sendTelegram()
 	}
 	if h.hasApproverAPI() {
 		delivered = true
@@ -1391,8 +1468,8 @@ func (h *Handler) updateRequest(req *models.ApprovalRequest) {
 func (h *Handler) SweepPending(now time.Time) {
 	for _, req := range h.store.DueReminders(now, h.config.WriteReminderBefore) {
 		sent := false
-		if h.tgClient != nil {
-			if err := h.tgClient.SendReminder(req); err != nil {
+		if tg := h.tg(); tg != nil {
+			if err := tg.SendReminder(req); err != nil {
 				h.log.Error("Failed to send write approval reminder", logger.F("error", err.Error(), "request_id", req.ID))
 			} else {
 				sent = true
@@ -1411,6 +1488,7 @@ func (h *Handler) SweepPending(now time.Time) {
 	}
 	h.closeExpired(now)
 	h.grants.Cleanup()
+	h.sweepOwnerWindows()
 }
 
 func (h *Handler) closeExpired(now time.Time) {

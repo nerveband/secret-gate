@@ -162,7 +162,7 @@ func (s *Service) ReadFields(secretName, vault string, want []string) (map[strin
 				"available fields: "+strings.Join(FieldNames(values), ", "))
 		}
 		if protected[actual] {
-			return nil, E(ErrValidation, fmt.Sprintf("%q is process-only (card number, CVV, or PIN) and never enters model context", actual),
+			return nil, E(ErrValidation, fmt.Sprintf("%q is process-only (a card value, or a value approved by an owner window) and never enters model context", actual),
 				fmt.Sprintf("use: secret-gate browser fill --item %q --field '%s=<css selector>' ... or secret-gate exec --item %q --field %q --env VAR -- <command>", secretName, actual, secretName, actual))
 		}
 		out[actual] = value
@@ -314,6 +314,9 @@ func (s *Service) SSH(ctx context.Context, req SSHRequest) (*ExecOutcome, error)
 		ttl := time.Duration(s.Config.CacheTTLSec) * time.Second
 		if ttl <= 0 {
 			ttl = defaultSSHAgentTTL
+		}
+		if life, ok := models.RemainingLife(values, time.Now()); ok && life < ttl {
+			ttl = life
 		}
 		if err := daemon.AddToSSHAgent(keyValue, ttl); err != nil {
 			identityPath, err = daemon.CreateTempSSHKey(keyValue)

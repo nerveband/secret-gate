@@ -49,6 +49,14 @@ Configure at least one. They can run together.
 
 Each channel offers approve once, a time-boxed window (a read window for reads, a write window for writes), and deny. Card reads, card writes, and writes where you type the values always need a tap on that request. Telegram and PushWard poll their services, so neither needs an inbound webhook. See [docs/approver-api.md](docs/approver-api.md) for the HTTP API.
 
+### Open a window yourself, and use Telegram only for control
+
+Telegram can also be your remote control while PushWard (or silent Telegram) delivers the notifications:
+
+- **Owner windows.** `/open` (or a pinned panel button) plus a confirm tap opens a 30-minute read window before any agent asks. It covers the items in your configured vault (no tagging needed), never Secret Gate's own credentials, cards, passkeys, or files, and releases values to commands, never to the model. `/close` ends it. See [docs/owner-window.md](docs/owner-window.md).
+- **Alert modes.** `/settings` switches Telegram alerts between on, silent, and off. With alerts off, approval cards go to PushWard only, and approvals tapped in Telegram (or listed with `/pending`) still work.
+- **Only you.** Telegram taps and commands are accepted only from `TELEGRAM_APPROVER_USER_ID` (default: your private chat id) in the configured chat.
+
 ## Quick Start
 
 ```bash
@@ -135,6 +143,12 @@ At least one approval channel is required: Telegram (both variables), PushWard, 
 | `WRITE_WINDOW_TTL` | No | `15m` | Length of the "Approve + writes" window; `0` hides the option |
 | `WRITE_FOLLOWUP_TTL` | No | `15m` | How long the same requester may update an item it just wrote without a new approval; `0` disables it |
 | `OP_SERVICE_ACCOUNT_TOKEN` | No | unset | 1Password service account token used only to attach files (Connect has no upload endpoint). Needs read and write access to the target vaults. Without it, writes with files are refused before approval |
+| `TELEGRAM_APPROVER_USER_ID` | No | the private `TELEGRAM_CHAT_ID` | Telegram user whose taps and commands are obeyed; required when the chat is a group |
+| `TELEGRAM_NOTIFICATIONS` | No | `on` | Default Telegram alert mode: `on`, `silent`, or `off`. Changed at runtime with `/settings` |
+| `OWNER_WINDOW_VAULTS` | No | unset | Vaults an owner window may cover. Empty disables owner windows. Also `OWNER_WINDOW_ENABLED`, `_TAG`, `_DENY`, `_TTL`, `_MAX`, `_MAX_REQUESTS`, `_MAX_ITEMS`, `_DAILY_MAX`: see [docs/owner-window.md](docs/owner-window.md) |
+| `SECRET_GATE_OPENER_TOKEN_SHA256` | No | unset | SHA-256 of a token that may only open, list, and close owner windows through the Approver API |
+| `SETTINGS_PATH` | No | `/app/state/settings.json` in the image | Where `/set` changes are saved |
+| `AUDIT_LOG_PATH` | No | unset | Append-only JSON-lines audit file for owner windows and settings |
 
 ## Client Usage
 

@@ -29,9 +29,13 @@ COPY --from=builder /client-darwin-arm64 /app/clients/client-darwin-arm64
 
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup && \
+    mkdir -p /app/state && \
     chown -R appuser:appgroup /app
 
 USER appuser
 EXPOSE 8080
 ENV PORT=8080
+# Runtime settings changed with /set. Mount a volume at /app/state to keep
+# them across redeploys that recreate the container.
+ENV SETTINGS_PATH=/app/state/settings.json
 CMD ["/app/server"]

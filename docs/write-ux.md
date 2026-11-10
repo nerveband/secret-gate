@@ -134,7 +134,10 @@ Grants and windows live in server memory only and end on restart.
 
 ## Not changed
 
-- The read window stays global across requesters (`AUTO_APPROVE_TTL`).
+- The tap-opened read window stays global across requesters
+  (`AUTO_APPROVE_TTL`), except that it no longer covers Secret Gate's own
+  credentials, passkeys, or attachments. Windows you open before any request
+  exists are scoped and budgeted: see [owner-window.md](owner-window.md).
 - `machine` and Paseo agent ID are self-reported by the client. The window
   also pins the requester IP seen by the server, but two agents on one host
   without distinct Paseo agent IDs share a window.

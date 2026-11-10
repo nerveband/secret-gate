@@ -109,6 +109,14 @@ taps down:
   same vault during that window are approved automatically and audited in
   Telegram. Do not rely on it: it can be revoked at any time.
 
+The owner may open a read window ahead of time from their phone. Reads of
+items in the window's vault are then approved at once and audited, but their
+values are process-only (use `exec`, `ssh`, `otp exec`, or `browser fill`;
+`--reveal` is refused) and the window can end or be closed at any moment.
+You cannot open, extend, or renew a window, and there is no command for it;
+if a request is not covered it simply waits for a tap as before. Never ask
+the owner to put Secret Gate's own credentials in reach of a window.
+
 Before creating an approval, Secret Gate verifies that the configured
 1Password Connect token can write to that vault. An unavailable or
 unverifiable capability returns `vault_write_unavailable` or

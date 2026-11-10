@@ -21,6 +21,9 @@ import (
 // CallbackHandler is called when a callback query is received from polling
 type CallbackHandler func(callback *CallbackQuery)
 
+// MessageHandler is called when a text message is received from polling
+type MessageHandler func(message *Message)
+
 // Client wraps the Telegram Bot API
 type Client struct {
 	token        string
@@ -28,18 +31,30 @@ type Client struct {
 	httpClient   *http.Client
 	baseURL      string
 	lastUpdateID int64
+	// silent reports whether outgoing messages should arrive without a push
+	// notification. It is read on every send so /set takes effect at once.
+	silent func() bool
+	// pollClient has the longer timeout long polling needs.
+	pollClient *http.Client
 }
 
-// Message represents a Telegram message
+// Message represents a Telegram message, sent or received.
 type Message struct {
-	MessageID int   `json:"message_id"`
-	Chat      Chat  `json:"chat"`
-	Date      int64 `json:"date"`
+	MessageID int    `json:"message_id"`
+	From      *User  `json:"from,omitempty"`
+	Chat      Chat   `json:"chat"`
+	Date      int64  `json:"date"`
+	Text      string `json:"text,omitempty"`
+	// ForwardOrigin is set on forwarded messages; ViaBot on inline-bot ones.
+	// Neither is ever accepted as a command.
+	ForwardOrigin json.RawMessage `json:"forward_origin,omitempty"`
+	ViaBot        *User           `json:"via_bot,omitempty"`
 }
 
 // Chat represents a Telegram chat
 type Chat struct {
-	ID int64 `json:"id"`
+	ID   int64  `json:"id"`
+	Type string `json:"type,omitempty"`
 }
 
 // InlineKeyboardButton represents an inline keyboard button
@@ -56,11 +71,12 @@ type InlineKeyboardMarkup struct {
 
 // SendMessageRequest represents a request to send a message
 type SendMessageRequest struct {
-	ChatID          int64                 `json:"chat_id"`
-	Text            string                `json:"text"`
-	ParseMode       string                `json:"parse_mode,omitempty"`
-	ReplyMarkup     *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
-	ReplyParameters *ReplyParameters      `json:"reply_parameters,omitempty"`
+	ChatID              int64                 `json:"chat_id"`
+	Text                string                `json:"text"`
+	ParseMode           string                `json:"parse_mode,omitempty"`
+	ReplyMarkup         *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ReplyParameters     *ReplyParameters      `json:"reply_parameters,omitempty"`
+	DisableNotification bool                  `json:"disable_notification,omitempty"`
 }
 
 // ReplyParameters makes a message a reply, so Telegram links it to the original.
@@ -106,6 +122,7 @@ type User struct {
 type Update struct {
 	UpdateID      int64          `json:"update_id"`
 	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+	Message       *Message       `json:"message,omitempty"`
 }
 
 // New creates a new Telegram client
@@ -117,6 +134,7 @@ func New(token string, chatID int64) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		pollClient: &http.Client{Timeout: 35 * time.Second},
 	}
 }
 
@@ -124,47 +142,12 @@ func New(token string, chatID int64) *Client {
 // windowTTL is the length of the window the approver may open from this
 // request: the read window for reads, the write window for writes.
 func (c *Client) SendApprovalRequest(req *models.ApprovalRequest, webhookBaseURL string, windowTTL time.Duration) (int, error) {
-	text := approvalMessage(req)
-	keyboard := approvalKeyboard(req, windowTTL)
-
-	msgReq := SendMessageRequest{
+	return c.sendMessage(SendMessageRequest{
 		ChatID:      c.chatID,
-		Text:        text,
+		Text:        approvalMessage(req),
 		ParseMode:   "HTML",
-		ReplyMarkup: keyboard,
-	}
-
-	body, err := json.Marshal(msgReq)
-	if err != nil {
-		return 0, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return 0, fmt.Errorf("sending message: %w", transportError(err))
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("reading response: %w", err)
-	}
-
-	var apiResp APIResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return 0, fmt.Errorf("parsing response: %w", err)
-	}
-
-	if !apiResp.OK {
-		return 0, fmt.Errorf("telegram API error: %s", apiResp.Description)
-	}
-
-	var msg Message
-	if err := json.Unmarshal(apiResp.Result, &msg); err != nil {
-		return 0, fmt.Errorf("parsing message: %w", err)
-	}
-
-	return msg.MessageID, nil
+		ReplyMarkup: approvalKeyboard(req, windowTTL),
+	})
 }
 
 func approvalMessage(req *models.ApprovalRequest) string {
@@ -182,6 +165,9 @@ func approvalMessage(req *models.ApprovalRequest) string {
 	}
 	writeReason(&b, req)
 	writeRequester(&b, req)
+	if req.WindowNote != "" {
+		b.WriteString("\n\nℹ️ Window open, not covering this request: " + html.EscapeString(req.WindowNote))
+	}
 	b.WriteString("\n\nExpires: ")
 	b.WriteString(req.ExpiresAt.Format("15:04 MST"))
 	b.WriteString("\nRequest: <code>")
@@ -363,9 +349,10 @@ func approvalKeyboard(req *models.ApprovalRequest, windowTTL time.Duration) *Inl
 	approveRow := []InlineKeyboardButton{{Text: approveText, CallbackData: "approve:" + req.ID}}
 	switch {
 	case req.Sensitive:
+	case windowTTL <= 0:
 	case !req.IsWrite():
 		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve " + formatDurationLabel(windowTTL), CallbackData: "approve_window:" + req.ID})
-	case windowTTL > 0:
+	default:
 		approveRow = append(approveRow, InlineKeyboardButton{Text: "✅ Approve + writes " + formatDurationLabel(windowTTL), CallbackData: "approve_writes:" + req.ID})
 	}
 	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{approveRow, deny}}
@@ -504,44 +491,12 @@ func formatDurationLabel(d time.Duration) string {
 
 // SendAutoApprovedNotification sends an audit message for a request covered by an approval session.
 func (c *Client) SendAutoApprovedNotification(req *models.ApprovalRequest, approver string, expiresAt time.Time) error {
-	text := approvedMessage(req, approver, "Until "+expiresAt.Format("15:04 MST"))
-
-	msgReq := SendMessageRequest{
+	_, err := c.sendMessage(SendMessageRequest{
 		ChatID:    c.chatID,
-		Text:      text,
+		Text:      approvedMessage(req, approver, "Until "+expiresAt.Format("15:04 MST")),
 		ParseMode: "HTML",
-	}
-
-	body, err := json.Marshal(msgReq)
-	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
-	}
-
-	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("sending message: %w", transportError(err))
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response: %w", err)
-	}
-
-	var apiResp APIResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
-	}
-
-	if !apiResp.OK {
-		// Re-editing a message to identical text and buttons is a no-op, not a failure.
-		if strings.Contains(apiResp.Description, "message is not modified") {
-			return nil
-		}
-		return fmt.Errorf("telegram API error: %s", apiResp.Description)
-	}
-
-	return nil
+	})
+	return err
 }
 
 // UpdateMessageApproved updates a message to show it was approved
@@ -597,6 +552,9 @@ func (c *Client) SendWindowRevoked(window writegrant.Window, revoker string, dro
 }
 
 func (c *Client) sendMessage(msgReq SendMessageRequest) (int, error) {
+	if c.silent != nil && c.silent() {
+		msgReq.DisableNotification = true
+	}
 	body, err := json.Marshal(msgReq)
 	if err != nil {
 		return 0, fmt.Errorf("marshaling request: %w", err)
@@ -630,28 +588,8 @@ func (c *Client) SendWriteBlocked(req *models.ApprovalRequest, detail string) er
 }
 
 func (c *Client) sendText(text string) error {
-	msgReq := SendMessageRequest{ChatID: c.chatID, Text: text, ParseMode: "HTML"}
-	body, err := json.Marshal(msgReq)
-	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
-	}
-	resp, err := c.httpClient.Post(c.baseURL+"/sendMessage", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("sending message: %w", transportError(err))
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response: %w", err)
-	}
-	var apiResp APIResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
-	}
-	if !apiResp.OK {
-		return fmt.Errorf("telegram API error: %s", apiResp.Description)
-	}
-	return nil
+	_, err := c.sendMessage(SendMessageRequest{ChatID: c.chatID, Text: text, ParseMode: "HTML"})
+	return err
 }
 
 // AnswerCallbackQuery answers a callback query (removes loading state from button)
@@ -677,10 +615,26 @@ func (c *Client) AnswerCallbackQuery(callbackID, text string) error {
 
 // GetUpdates fetches new updates from Telegram using long polling
 func (c *Client) GetUpdates(timeout int) ([]Update, error) {
-	url := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=%d&allowed_updates=[\"callback_query\"]",
-		c.baseURL, c.lastUpdateID+1, timeout)
+	updates, err := c.fetchUpdates(c.lastUpdateID+1, timeout)
+	if err != nil {
+		return nil, err
+	}
+	// Track the last update ID so we don't process it again
+	for _, u := range updates {
+		if u.UpdateID > c.lastUpdateID {
+			c.lastUpdateID = u.UpdateID
+		}
+	}
+	return updates, nil
+}
 
-	resp, err := c.httpClient.Get(url)
+// fetchUpdates asks for updates from offset on. A negative offset returns
+// only the newest update and makes Telegram forget everything before it.
+func (c *Client) fetchUpdates(offset int64, timeout int) ([]Update, error) {
+	url := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=%d&allowed_updates=[\"callback_query\",\"message\"]",
+		c.baseURL, offset, timeout)
+
+	resp, err := c.poller().Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetching updates: %w", transportError(err))
 	}
@@ -704,15 +658,17 @@ func (c *Client) GetUpdates(timeout int) ([]Update, error) {
 	if err := json.Unmarshal(apiResp.Result, &updates); err != nil {
 		return nil, fmt.Errorf("parsing updates: %w", err)
 	}
-
-	// Track the last update ID so we don't process it again
-	for _, u := range updates {
-		if u.UpdateID > c.lastUpdateID {
-			c.lastUpdateID = u.UpdateID
-		}
-	}
-
 	return updates, nil
+}
+
+// poller returns the client used for long polling, which needs a longer
+// timeout than ordinary calls. It is separate so polling never changes the
+// client other goroutines send with.
+func (c *Client) poller() *http.Client {
+	if c.pollClient != nil {
+		return c.pollClient
+	}
+	return c.httpClient
 }
 
 // DeleteWebhook removes any active webhook so getUpdates polling can work
@@ -744,8 +700,11 @@ func (c *Client) DeleteWebhook() error {
 	return nil
 }
 
-// PollUpdates starts a long-polling loop that calls handler for each callback query
-func (c *Client) PollUpdates(handler CallbackHandler) {
+// PollUpdates starts a long-polling loop. onCallback receives every button
+// tap and onMessage every text message; the handlers decide who is allowed.
+// Updates that queued up while the server was down are dropped first, so an
+// old tap or command can never fire after a restart.
+func (c *Client) PollUpdates(onCallback CallbackHandler, onMessage MessageHandler) {
 	log := logger.New()
 
 	// Delete any active webhook before starting long polling (retry until success)
@@ -758,16 +717,21 @@ func (c *Client) PollUpdates(handler CallbackHandler) {
 		log.Info("Cleared Telegram webhook, starting long polling")
 		break
 	}
-
-	// Use a longer timeout for the HTTP client during long polling
-	pollingClient := &http.Client{Timeout: 35 * time.Second}
-	origClient := c.httpClient
+	for {
+		dropped, err := c.DrainPending()
+		if err != nil {
+			log.Error("Failed to drop queued Telegram updates, retrying in 5s", logger.F("error", err.Error()))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if dropped > 0 {
+			log.Info("Dropped Telegram updates queued while the server was down", logger.F("count", dropped))
+		}
+		break
+	}
 
 	for {
-		c.httpClient = pollingClient
 		updates, err := c.GetUpdates(30)
-		c.httpClient = origClient
-
 		if err != nil {
 			// If webhook was re-enabled externally, delete it again
 			if strings.Contains(err.Error(), "webhook is active") {
@@ -779,13 +743,30 @@ func (c *Client) PollUpdates(handler CallbackHandler) {
 			time.Sleep(5 * time.Second)
 			continue
 		}
-
 		for _, update := range updates {
-			if update.CallbackQuery != nil {
-				handler(update.CallbackQuery)
+			switch {
+			case update.CallbackQuery != nil && onCallback != nil:
+				onCallback(update.CallbackQuery)
+			case update.Message != nil && onMessage != nil:
+				onMessage(update.Message)
 			}
 		}
 	}
+}
+
+// DrainPending drops every update Telegram is holding and returns how many
+// it saw. Telegram keeps undelivered updates for up to 24 hours.
+func (c *Client) DrainPending() (int, error) {
+	updates, err := c.fetchUpdates(-1, 0)
+	if err != nil {
+		return 0, err
+	}
+	for _, u := range updates {
+		if u.UpdateID > c.lastUpdateID {
+			c.lastUpdateID = u.UpdateID
+		}
+	}
+	return len(updates), nil
 }
 
 func (c *Client) editMessage(messageID int, text string, keyboard *InlineKeyboardMarkup) error {

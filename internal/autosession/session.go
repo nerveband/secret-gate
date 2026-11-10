@@ -74,6 +74,13 @@ func (s *Store) Cleanup() int {
 	return removed
 }
 
+// Clear ends every window at once, used when tap windows are switched off.
+func (s *Store) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = make(map[string]*Session)
+}
+
 func randomID() string {
 	bytes := make([]byte, 8)
 	if _, err := rand.Read(bytes); err != nil {

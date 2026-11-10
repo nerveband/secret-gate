@@ -25,14 +25,15 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// Item represents a 1Password item. Files are kept so an update sends back
-// the item's attachments unchanged.
+// Item represents a 1Password item. Files and Tags are kept so an update
+// sends back the item's attachments and tags unchanged.
 type Item struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
 	Vault    Vault     `json:"vault"`
 	Fields   []Field   `json:"fields"`
 	Files    []File    `json:"files,omitempty"`
+	Tags     []string  `json:"tags,omitempty"`
 	Version  int       `json:"version"`
 	Category string    `json:"category,omitempty"`
 	Sections []Section `json:"sections,omitempty"`
@@ -324,6 +325,7 @@ type ItemMeta struct {
 	Vault    string
 	Title    string
 	Category string
+	Tags     []string
 	Fields   []FieldInfo
 	Files    []FileInfo
 	Card     *CardSummary
@@ -418,7 +420,7 @@ func (c *Client) GetItemFields(vaultName, itemTitle string) (*ItemMeta, error) {
 		files = append(files, FileInfo{ID: f.ID, Name: f.Name, Size: f.Size, Section: section})
 	}
 
-	return &ItemMeta{Vault: actualVault, Title: actualTitle, Category: item.Category, Fields: fields, Files: files, Card: summarizeCard(item)}, nil
+	return &ItemMeta{Vault: actualVault, Title: actualTitle, Category: item.Category, Tags: item.Tags, Fields: fields, Files: files, Card: summarizeCard(item)}, nil
 }
 
 // PutItem creates or replaces an item through 1Password Connect. For updates,
