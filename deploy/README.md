@@ -42,6 +42,14 @@ docker-compose -f "$compose" up -d --no-deps --no-build secret-gate
 curl -fsS http://127.0.0.1:18080/health
 ```
 
+After the new container is healthy, run `deploy/cleanup.sh`. Each build leaves
+about 1 GB (the Go build stage), and a failed or cancelled build leaves an
+exited container that pins it, so a plain `docker image prune` frees nothing.
+The script removes those containers, untagged images, and rollback tags
+(`secret-gate:vX.Y.Z`) older than the newest three. Tag the image you are
+replacing as `secret-gate:vX.Y.Z` before building if you want it kept as a
+rollback. `DRY_RUN=1` shows what it would remove.
+
 Build the native client with the task-local caches documented in
 [AGENTS.md](../AGENTS.md). Preserve the installed client before replacing
 `~/.local/bin/secret-gate` atomically, then run `secret-gate version`.
